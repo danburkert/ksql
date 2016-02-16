@@ -7,4 +7,7 @@ description = "SQL-like shell for Apache Kudu (Incubating)"
 keywords = ["kudu", "database"]
 
 [dependencies]
+docopt = "0.6"
 kudu = { git = "https://github.com/danburkert/kudu-rs" }
+linenoise-rust = "0.1"
+rustc-serialize = "0.3"
