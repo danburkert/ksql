@@ -10,5 +10,4 @@ keywords = ["kudu", "database"]
 docopt = "0.6"
 kudu = { git = "https://github.com/danburkert/kudu-rs" }
 linenoise-rust = "0.1"
-nom = "1.2"
 rustc-serialize = "0.3"

@@ -3,9 +3,6 @@ extern crate kudu;
 extern crate linenoise;
 extern crate rustc_serialize;
 
-#[macro_use]
-extern crate nom;
-
 mod command;
 mod parser;
 
