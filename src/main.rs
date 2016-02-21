@@ -3,9 +3,13 @@ extern crate kudu;
 extern crate linenoise;
 extern crate rustc_serialize;
 
+#[macro_use]
+extern crate nom;
+
+mod command;
+mod parser;
+
 use docopt::Docopt;
-use std::net::SocketAddr;
-use std::str::FromStr;
 
 static USAGE: &'static str = "
 Usage:
@@ -52,7 +56,7 @@ fn main() {
                     }
                 }
             }
-            Some(input) => {
+            Some(_) => {
                 println!("unknown command");
             }
         }
