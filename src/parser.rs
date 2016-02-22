@@ -5,27 +5,12 @@
 //! (but with fewer macros). Nom wasn't appropriate because it does not have the
 //! ability to return a hint as the result of an incomplete parse.
 
-#![allow(non_snake_case)]
-
 use command;
-
-/// Returns the result of a parse if not successful, otherwise returns the value
-/// and remaining input.
-macro_rules! try_parse {
-    ($e:expr) => (match $e {
-        $crate::parser::ParseResult::Ok(t, remaining) => (t, remaining),
-        $crate::parser::ParseResult::Incomplete(hint, remaining) =>
-            return $crate::parser::ParseResult::Incomplete(hint, remaining),
-        $crate::parser::ParseResult::Err(err, remaining) =>
-            return $crate::parser::ParseResult::Err(err, remaining),
-    });
-}
 
 /// A hint which indicates what additional input is necessary to achieve a
 /// successful parse.
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum Hint<'a> {
-
     /// Hint with a constant.
     Constant(&'a str),
 
@@ -55,7 +40,7 @@ pub enum ParseResult<'a, T> {
 ///
 /// TODO: the lifetime param shouldn't be necessary, but I can't figure out
 /// another way to have the Output type be a &str.
-trait Parser<'a> {
+pub trait Parser<'a> {
     type Output;
     fn parse(&self, &'a str) -> ParseResult<'a, Self::Output>;
 
@@ -98,7 +83,7 @@ trait Parser<'a> {
 
 /// Applies the parser 0 or more times and returns the list of results in a Vec.
 #[derive(Clone, Debug, Eq, PartialEq, Copy)]
-pub struct Many0<P>(P);
+struct Many0<P>(P);
 impl <'a, T, P> Parser<'a> for Many0<P> where P: Parser<'a, Output=T> {
     type Output = Vec<T>;
     fn parse(&self, mut input: &'a str) -> ParseResult<'a, Vec<T>> {
@@ -114,7 +99,7 @@ impl <'a, T, P> Parser<'a> for Many0<P> where P: Parser<'a, Output=T> {
 
 /// Applies the parser 1 or more times and returns the list of results in a Vec.
 #[derive(Clone, Debug, Eq, PartialEq, Copy)]
-pub struct Many1<P>(P);
+struct Many1<P>(P);
 impl <'a, T, P> Parser<'a> for Many1<P> where P: Parser<'a, Output=T> {
     type Output = Vec<T>;
     fn parse(&self, input: &'a str) -> ParseResult<'a, Vec<T>> {
@@ -131,7 +116,7 @@ impl <'a, T, P> Parser<'a> for Many1<P> where P: Parser<'a, Output=T> {
 
 /// Applies the parser 0 or more times and returns nothing.
 #[derive(Clone, Debug, Eq, PartialEq, Copy)]
-pub struct Ignore0<P>(P);
+struct Ignore0<P>(P);
 impl <'a, P> Parser<'a> for Ignore0<P> where P: Parser<'a> {
     type Output = ();
     fn parse(&self, mut input: &'a str) -> ParseResult<'a, ()> {
@@ -145,7 +130,7 @@ impl <'a, P> Parser<'a> for Ignore0<P> where P: Parser<'a> {
 
 /// Applies the parser 1 or more times and returns the list of results in a Vec.
 #[derive(Clone, Debug, Eq, PartialEq, Copy)]
-pub struct Ignore1<P>(P);
+struct Ignore1<P>(P);
 impl <'a, T, P> Parser<'a> for Ignore1<P> where P: Parser<'a, Output=T> {
     type Output = ();
     fn parse(&self, input: &'a str) -> ParseResult<'a, ()> {
@@ -158,7 +143,7 @@ impl <'a, T, P> Parser<'a> for Ignore1<P> where P: Parser<'a, Output=T> {
     }
 }
 
-pub struct OrElse<P1, P2>(P1, P2);
+struct OrElse<P1, P2>(P1, P2);
 impl <'a, T, P1, P2> Parser<'a> for OrElse<P1, P2>
 where P1: Parser<'a, Output=T>,
       P2: Parser<'a, Output=T> {
@@ -211,7 +196,7 @@ where P1: Parser<'a, Output=T>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Copy)]
-pub struct AndThen<P1, P2>(P1, P2);
+struct AndThen<P1, P2>(P1, P2);
 impl <'a, T, P1, P2> Parser<'a> for AndThen<P1, P2>
 where P1: Parser<'a>,
       P2: Parser<'a, Output=T> {
@@ -224,7 +209,7 @@ where P1: Parser<'a>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Copy)]
-pub struct FollowedBy<P1, P2>(P1, P2);
+struct FollowedBy<P1, P2>(P1, P2);
 impl <'a, T, P1, P2> Parser<'a> for FollowedBy<P1, P2>
 where P1: Parser<'a, Output=T>,
       P2: Parser<'a> {
@@ -238,7 +223,7 @@ where P1: Parser<'a, Output=T>,
 
 /// Returns the longest string until the provided function fails.
 #[derive(Clone, Debug, Eq, PartialEq, Copy)]
-pub struct TakeWhile0<F>(F);
+struct TakeWhile0<F>(F);
 impl <'a, F> Parser<'a> for TakeWhile0<F> where F: Fn(char) -> bool {
     type Output = &'a str;
     fn parse(&self, input: &'a str) -> ParseResult<'a, &'a str> {
@@ -254,7 +239,7 @@ impl <'a, F> Parser<'a> for TakeWhile0<F> where F: Fn(char) -> bool {
 
 /// Returns the longest (non-empty) string until the provided function fails.
 #[derive(Clone, Debug, Eq, PartialEq, Copy)]
-pub struct TakeWhile1<F>(F, &'static str);
+struct TakeWhile1<F>(F, &'static str);
 impl <'a, F> Parser<'a> for TakeWhile1<F> where F: Fn(char) -> bool {
     type Output = &'a str;
     fn parse(&self, input: &'a str) -> ParseResult<'a, &'a str> {
@@ -278,7 +263,7 @@ impl <'a, F> Parser<'a> for TakeWhile1<F> where F: Fn(char) -> bool {
 
 /// Transforms the result of a parser.
 #[derive(Clone, Debug, Eq, PartialEq, Copy)]
-pub struct Map<P, F>(P, F);
+struct Map<P, F>(P, F);
 impl <'a, T, U, P, F> Parser<'a> for Map<P, F>
 where P: Parser<'a, Output=T>,
       F: Fn(T) -> U,
@@ -295,7 +280,7 @@ where P: Parser<'a, Output=T>,
 ////////////////////////////////////////////////////////////////////////////////
 
 /// Parses the provided tag from the input.
-pub struct Tag(&'static str);
+struct Tag(&'static str);
 impl <'a> Parser<'a> for Tag {
     type Output = &'a str;
     fn parse(&self, input: &'a str) -> ParseResult<'a, &'a str> {
@@ -320,7 +305,7 @@ impl <'a> Parser<'a> for Tag {
     }
 }
 
-pub struct Char(char, &'static str);
+struct Char(char, &'static str);
 impl <'a> Parser<'a> for Char {
     type Output = char;
     fn parse(&self, input: &'a str) -> ParseResult<'a, char> {
@@ -332,13 +317,9 @@ impl <'a> Parser<'a> for Char {
     }
 }
 
-////////////////////////////////////////////////////////////////////////////////
-// SQL Parsers
-////////////////////////////////////////////////////////////////////////////////
-
 /// Parses the provided keyword from the input. The keyword should be only ASCII
 /// capital letters, the parse is case-insensitive.
-pub struct Keyword(&'static str);
+struct Keyword(&'static str);
 impl <'a> Parser<'a> for Keyword {
     type Output = &'a str;
     fn parse(&self, input: &'a str) -> ParseResult<'a, &'a str> {
@@ -370,7 +351,7 @@ impl <'a> Parser<'a> for Keyword {
 /// /* this is
 ///    a block comment */
 /// ```
-pub struct BlockComment;
+struct BlockComment;
 impl <'a> Parser<'a> for BlockComment {
     type Output = &'a str;
     fn parse(&self, input: &'a str) -> ParseResult<'a, &'a str> {
@@ -389,7 +370,7 @@ impl <'a> Parser<'a> for BlockComment {
 /// ```sql
 /// -- line comment
 /// ```
-pub struct LineComment;
+struct LineComment;
 impl <'a> Parser<'a> for LineComment {
     type Output = &'a str;
     fn parse(&self, input: &'a str) -> ParseResult<'a, &'a str> {
@@ -404,34 +385,19 @@ impl <'a> Parser<'a> for LineComment {
 }
 
 /// Returns true if the character is a multispace character.
-pub fn is_multispace(c: char) -> bool {
+fn is_multispace(c: char) -> bool {
     c == ' ' || c == '\t' || c == '\n' || c == '\r'
 }
 
 /// Parses a SQL token delimiter. The delimiter may be a combination of
 /// whitespace or a comment.
-pub struct TokenDelimiter;
+struct TokenDelimiter;
 impl <'a> Parser<'a> for TokenDelimiter {
     type Output = &'a str;
     fn parse(&self, input: &'a str) -> ParseResult<'a, &'a str> {
         TakeWhile1(is_multispace, " ")
             .or_else(LineComment)
             .or_else(BlockComment)
-            .parse(input)
-    }
-}
-
-pub struct ShowTables;
-impl <'a> Parser<'a> for ShowTables {
-    type Output = command::ShowTables;
-    fn parse(&self, input: &'a str) -> ParseResult<'a, command::ShowTables> {
-        Many0(TokenDelimiter)
-            .and_then(Keyword("SHOW"))
-            .and_then(Many1(TokenDelimiter))
-            .and_then(Keyword("TABLES"))
-            .and_then(Many0(TokenDelimiter))
-            .and_then(Char(';', ";"))
-            .map(|_| command::ShowTables)
             .parse(input)
     }
 }
@@ -451,7 +417,7 @@ fn is_identifier_char(c: char) -> bool {
 /// Parses a table name. If the table name is suspected to be incomplete (the
 /// parse ends with no more input), then an incompete result is returned with a
 /// table hint.
-pub struct TableName;
+struct TableName;
 impl <'a> Parser<'a> for TableName {
     type Output = &'a str;
     fn parse(&self, input: &'a str) -> ParseResult<'a, &'a str> {
@@ -470,38 +436,93 @@ impl <'a> Parser<'a> for TableName {
     }
 }
 
-/// Parses a describe table statement.
-pub struct DescribeTable;
+
+////////////////////////////////////////////////////////////////////////////////
+// SQL Command Parsers
+////////////////////////////////////////////////////////////////////////////////
+
+/// Parses a SQL statement into a command.
+pub struct Command;
+impl <'a> Parser<'a> for Command {
+    type Output = command::Command<'a>;
+    fn parse(&self, input: &'a str) -> ParseResult<'a, command::Command<'a>> {
+        let commands = Noop.or_else(ShowTables)
+                           .or_else(DescribeTable);
+
+
+        Ignore0(TokenDelimiter)
+            .and_then(commands)
+            .followed_by(Ignore0(TokenDelimiter))
+            .parse(input)
+    }
+}
+
+/// Parses 1 or more SQL statements into commands.
+pub struct Commands1;
+impl <'a> Parser<'a> for Commands1 {
+    type Output = Vec<command::Command<'a>>;
+    fn parse(&self, input: &'a str) -> ParseResult<'a, Vec<command::Command<'a>>> {
+        Many1(Command).parse(input)
+    }
+}
+
+/// Parses a no-op statement.
+struct Noop;
+impl <'a> Parser<'a> for Noop {
+    type Output = command::Command<'a>;
+    fn parse(&self, input: &'a str) -> ParseResult<'a, command::Command<'a>> {
+        Char(';', "")
+            .map(|_| command::Command::Noop)
+            .parse(input)
+    }
+}
+
+/// Parses a SHOW TABLES statement.
+struct ShowTables;
+impl <'a> Parser<'a> for ShowTables {
+    type Output = command::Command<'a>;
+    fn parse(&self, input: &'a str) -> ParseResult<'a, command::Command<'a>> {
+        Keyword("SHOW")
+            .and_then(Ignore1(TokenDelimiter))
+            .and_then(Keyword("TABLES"))
+            .and_then(Ignore0(TokenDelimiter))
+            .and_then(Char(';', ";"))
+            .map(|_| command::Command::ShowTables)
+            .parse(input)
+    }
+}
+
+/// Parses a DESCRIBE TABLE statement.
+struct DescribeTable;
 impl <'a> Parser<'a> for DescribeTable {
-    type Output = command::DescribeTable<'a>;
-    fn parse(&self, input: &'a str) -> ParseResult<'a, command::DescribeTable<'a>> {
-        Many0(TokenDelimiter)
-            .and_then(Keyword("DESCRIBE"))
+    type Output = command::Command<'a>;
+    fn parse(&self, input: &'a str) -> ParseResult<'a, command::Command<'a>> {
+        Keyword("DESCRIBE")
             .and_then(Ignore1(TokenDelimiter))
             .and_then(Keyword("TABLE"))
             .and_then(Ignore1(TokenDelimiter))
-            .and_then(TableName).map(|table| command::DescribeTable { table: table })
+            .and_then(TableName).map(|table| command::Command::DescribeTable { table: table })
             .followed_by(Ignore0(TokenDelimiter))
             .followed_by(Char(';', ";"))
             .parse(input)
     }
 }
 
-/// Parses a describe table statement.
-pub struct Command;
-impl <'a> Parser<'a> for Command {
-    type Output = command::Command<'a>;
-    fn parse(&self, input: &'a str) -> ParseResult<'a, command::Command<'a>> {
-        ShowTables.map(command::Command::ShowTables)
-                  .or_else(DescribeTable.map(command::Command::DescribeTable))
-                  .parse(input)
-    }
-}
-
 #[cfg(test)]
 mod test {
-    use super::*;
-    use super::Parser;
+    use super::{
+        BlockComment,
+        Command,
+        DescribeTable,
+        Hint,
+        Keyword,
+        LineComment,
+        Noop,
+        Parser,
+        ParseResult,
+        ShowTables,
+        TokenDelimiter,
+    };
     use command;
 
     #[test]
@@ -583,25 +604,36 @@ SELECT";
     }
 
     #[test]
+    fn test_noop() {
+        let parser = Noop;
+        assert_eq!(parser.parse(";"),
+                   ParseResult::Ok(command::Command::Noop, ""));
+        assert_eq!(parser.parse("SHOW TABLES;"),
+                   ParseResult::Err("", "SHOW TABLES;"));
+    }
+
+    #[test]
     fn test_show_tables() {
         let parser = ShowTables;
-        assert_eq!(parser.parse(" SHOW TABLES ;"), ParseResult::Ok(command::ShowTables, ""));
-        assert_eq!(parser.parse("shOw TABLES;"), ParseResult::Ok(command::ShowTables, ""));
-        assert_eq!(parser.parse("\n\n\tshOw \t\r\nTABLES;next command"),
-                   ParseResult::Ok(command::ShowTables, "next command"));
+        assert_eq!(parser.parse("SHOW TABLES ;"),
+                   ParseResult::Ok(command::Command::ShowTables, ""));
+        assert_eq!(parser.parse("shOw TABLES;"),
+                   ParseResult::Ok(command::Command::ShowTables, ""));
+        assert_eq!(parser.parse("shOw \t\r\nTABLES;next command"),
+                   ParseResult::Ok(command::Command::ShowTables, "next command"));
 
         assert_eq!(parser.parse("SHOW--mycoment ; foo bar\nTABLES;"),
-                   ParseResult::Ok(command::ShowTables, ""));
+                   ParseResult::Ok(command::Command::ShowTables, ""));
     }
 
     #[test]
     fn test_describe_table() {
         let parser = DescribeTable;
         assert_eq!(parser.parse("DESCRIBE TABLE _foo1_bAr2;"),
-                   ParseResult::Ok(command::DescribeTable { table: "_foo1_bAr2" }, ""));
+                   ParseResult::Ok(command::Command::DescribeTable { table: "_foo1_bAr2" }, ""));
 
         assert_eq!(parser.parse("DESCRIBE TABLE \n\t\r -- some comment\n_______--another comment\n ; SELECT"),
-                   ParseResult::Ok(command::DescribeTable { table: "_______" }, " SELECT"));
+                   ParseResult::Ok(command::Command::DescribeTable { table: "_______" }, " SELECT"));
 
         assert_eq!(parser.parse("DESCRIBE TABLE -- t;\n"),
                    ParseResult::Incomplete(Hint::Table(""), ""));
@@ -617,13 +649,12 @@ SELECT";
     #[test]
     fn test_command() {
         let parser = Command;
-        assert_eq!(parser.parse("DESCRIBE TABLE _foo_bAr;"),
-                   ParseResult::Ok(command::Command::DescribeTable(
-                           command::DescribeTable { table: "_foo_bAr" }), ""));
+        assert_eq!(parser.parse("  DESCRIBE TABLE _foo_bAr;"),
+                   ParseResult::Ok(command::Command::DescribeTable { table: "_foo_bAr" }, ""));
         assert_eq!(parser.parse(" \n Show Tables;  SELECT"),
-                   ParseResult::Ok(command::Command::ShowTables(command::ShowTables), "  SELECT"));
+                   ParseResult::Ok(command::Command::ShowTables, "SELECT"));
 
-        assert_eq!(parser.parse("show t"),
+        assert_eq!(parser.parse("  show t"),
                    ParseResult::Incomplete(Hint::Constant("TABLES"), "t"));
         assert_eq!(parser.parse("   describe t"),
                    ParseResult::Incomplete(Hint::Constant("TABLE"), "t"));
