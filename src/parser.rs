@@ -7,12 +7,18 @@
 
 use command;
 
+pub struct Error<'a> {
+    expected: Option<Hint<'static>>,
+    context: Option<&'static str>,
+    remaining: &'a str,
+}
+
 /// A hint which indicates what additional input is necessary to achieve a
 /// successful parse.
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum Hint<'a> {
     /// Hint with a constant.
-    Constant(&'a str),
+    Constant(&'static str),
 
     /// Hint with a table name. The prefix of the table name is included.
     Table(&'a str),
@@ -22,16 +28,18 @@ pub enum Hint<'a> {
 /// failure. The failure may either be `Incomplete`, which indicates that not
 /// enough input was provided, along with a hint, or `Err` which indicates a
 /// parsing error occurred.
-#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub enum ParseResult<'a, T> {
     /// A succesful parse including the parsed value, and the remaining unparsed input.
     Ok(T, &'a str),
 
-    /// An incomplete parse including a hint, and the remaining unparsed input.
-    Incomplete(Hint<'a>, &'a str),
+    /// An incomplete parse including a hint and the remaining unparsed input
+    /// for each parse attempt.
+    Incomplete(Vec<(Hint<'a>, &'a str)>),
 
-    /// A parse error, including the expected input, and the remaining unparsed input.
-    Err(&'a str, &'a str),
+    /// A parse error, including the expected input as hints, and the remaining
+    /// unparsed input.
+    Err(Vec<Hint<'a>>, &'a str),
 }
 
 /// A standard interface for parsers.
@@ -153,33 +161,24 @@ where P1: Parser<'a, Output=T>,
             ParseResult::Ok(t, remaining) => {
                 ParseResult::Ok(t, remaining)
             },
-            ParseResult::Incomplete(hint1, remaining1) => {
+            ParseResult::Incomplete(mut hints1) => {
                 match self.1.parse(input) {
                     ParseResult::Ok(t, remaining) => {
                         ParseResult::Ok(t, remaining)
                     },
-                    ParseResult::Incomplete(hint2, remaining2) => {
-                        // Both parses were incomplete. Return the incomplete
-                        // result for the parse which made the most progress.
-                        if remaining1.len() <= remaining2.len() {
-                            ParseResult::Incomplete(hint1, remaining1)
-                        } else {
-                            ParseResult::Incomplete(hint2, remaining2)
-                        }
+                    ParseResult::Incomplete(hints2) => {
+                        hints1.extend_from_slice(&hints2);
+                        ParseResult::Incomplete(hints1)
                     },
                     ParseResult::Err(..) => {
-                        ParseResult::Incomplete(hint1, remaining1)
+                        ParseResult::Incomplete(hints1)
                     },
                 }
             },
             ParseResult::Err(error1, remaining1) => {
                 match self.1.parse(input) {
-                    ParseResult::Ok(t, remaining) => {
-                        ParseResult::Ok(t, remaining)
-                    },
-                    ParseResult::Incomplete(hint2, remaining2) => {
-                        ParseResult::Incomplete(hint2, remaining2)
-                    },
+                    ParseResult::Ok(t, remaining) => ParseResult::Ok(t, remaining),
+                    ParseResult::Incomplete(hints2) => ParseResult::Incomplete(hints2),
                     ParseResult::Err(error2, remaining2) => {
                         // Both parses errored. Return the error result for the
                         // parse which made the most progress.
@@ -239,15 +238,15 @@ impl <'a, F> Parser<'a> for TakeWhile0<F> where F: Fn(char) -> bool {
 
 /// Returns the longest (non-empty) string until the provided function fails.
 #[derive(Clone, Debug, Eq, PartialEq, Copy)]
-struct TakeWhile1<F>(F, &'static str);
+struct TakeWhile1<F>(F, Hint<'static>);
 impl <'a, F> Parser<'a> for TakeWhile1<F> where F: Fn(char) -> bool {
     type Output = &'a str;
     fn parse(&self, input: &'a str) -> ParseResult<'a, &'a str> {
         let mut char_indices = input.char_indices();
 
         match char_indices.next() {
-            None => return ParseResult::Incomplete(Hint::Constant(self.1), input),
-            Some((_, c)) if !self.0(c) => return ParseResult::Err(self.1, input),
+            None => return ParseResult::Incomplete(vec![(self.1, input)]),
+            Some((_, c)) if !self.0(c) => return ParseResult::Err(vec![self.1], input),
             _ => (),
         }
 
@@ -295,12 +294,12 @@ impl <'a> Parser<'a> for Tag {
         let len = min(tag_len, input_len);
 
         if &tag_bytes[0..len] != &input_bytes[0..len] {
-            ParseResult::Err(self.0, input)
+            ParseResult::Err(vec![Hint::Constant(self.0)], input)
         } else if len == tag_len {
             let (parsed, remaining) = input.split_at(len);
             ParseResult::Ok(parsed, remaining)
         } else {
-            ParseResult::Incomplete(Hint::Constant(self.0), input)
+            ParseResult::Incomplete(vec![(Hint::Constant(self.0), input)])
         }
     }
 }
@@ -310,9 +309,9 @@ impl <'a> Parser<'a> for Char {
     type Output = char;
     fn parse(&self, input: &'a str) -> ParseResult<'a, char> {
         match input.chars().next() {
-            None => ParseResult::Incomplete(Hint::Constant(self.1), input),
+            None => ParseResult::Incomplete(vec![(Hint::Constant(self.1), input)]),
             Some(c) if c == self.0 => ParseResult::Ok(self.0, &input[1..]),
-            _ => ParseResult::Err(self.1, input),
+            _ => ParseResult::Err(vec![Hint::Constant(self.1)], input),
         }
     }
 }
@@ -335,12 +334,12 @@ impl <'a> Parser<'a> for Keyword {
         let len = min(keyword_len, input_len);
 
         if &keyword_bytes[0..len] != &input_bytes[0..len].to_ascii_uppercase()[..] {
-            ParseResult::Err(self.0, input)
+            ParseResult::Err(vec![Hint::Constant(self.0)], input)
         } else if len == keyword_len {
             let (parsed, remaining) = input.split_at(len);
             ParseResult::Ok(parsed, remaining)
         } else {
-            ParseResult::Incomplete(Hint::Constant(self.0), input)
+            ParseResult::Incomplete(vec![(Hint::Constant(self.0), input)])
         }
     }
 }
@@ -360,7 +359,7 @@ impl <'a> Parser<'a> for BlockComment {
             let (parsed, remaining) = input.split_at(idx + 4);
             ParseResult::Ok(parsed, remaining)
         } else {
-            ParseResult::Incomplete(Hint::Constant("*/"), remaining)
+            ParseResult::Incomplete(vec![(Hint::Constant("*/"), remaining)])
         }
     }
 }
@@ -395,7 +394,7 @@ struct TokenDelimiter;
 impl <'a> Parser<'a> for TokenDelimiter {
     type Output = &'a str;
     fn parse(&self, input: &'a str) -> ParseResult<'a, &'a str> {
-        TakeWhile1(is_multispace, " ")
+        TakeWhile1(is_multispace, Hint::Constant(" "))
             .or_else(LineComment)
             .or_else(BlockComment)
             .parse(input)
@@ -421,21 +420,22 @@ struct TableName;
 impl <'a> Parser<'a> for TableName {
     type Output = &'a str;
     fn parse(&self, input: &'a str) -> ParseResult<'a, &'a str> {
-        match TakeWhile1(is_identifier_char, "").parse(input) {
-            ParseResult::Incomplete(_, remaining) =>
-                ParseResult::Incomplete(Hint::Table(""), remaining),
+        match TakeWhile1(is_identifier_char, Hint::Table("")).parse(input) {
+            ParseResult::Incomplete(hints) => {
+                assert!(input.is_empty());
+                ParseResult::Incomplete(hints)
+            },
             ParseResult::Ok(identifier, remaining) => {
                 if remaining.is_empty() {
-                    ParseResult::Incomplete(Hint::Table(identifier), input)
+                    ParseResult::Incomplete(vec![(Hint::Table(identifier), input)])
                 } else {
                     ParseResult::Ok(identifier, remaining)
                 }
             }
-            ParseResult::Err(_, remaining) => ParseResult::Err("", remaining),
+            ParseResult::Err(_, remaining) => ParseResult::Err(vec![Hint::Table("")], remaining),
         }
     }
 }
-
 
 ////////////////////////////////////////////////////////////////////////////////
 // SQL Command Parsers
@@ -446,9 +446,8 @@ pub struct Command;
 impl <'a> Parser<'a> for Command {
     type Output = command::Command<'a>;
     fn parse(&self, input: &'a str) -> ParseResult<'a, command::Command<'a>> {
-        let commands = Noop.or_else(ShowTables)
-                           .or_else(DescribeTable);
-
+        let commands = ShowTables.or_else(DescribeTable)
+                                 .or_else(Noop);
 
         Ignore0(TokenDelimiter)
             .and_then(commands)
@@ -471,9 +470,14 @@ struct Noop;
 impl <'a> Parser<'a> for Noop {
     type Output = command::Command<'a>;
     fn parse(&self, input: &'a str) -> ParseResult<'a, command::Command<'a>> {
-        Char(';', "")
-            .map(|_| command::Command::Noop)
-            .parse(input)
+        match Char(';', "").parse(input) {
+            ParseResult::Ok(_, remaining) => ParseResult::Ok(command::Command::Noop, remaining),
+            ParseResult::Incomplete(..) => {
+                assert!(input.is_empty());
+                ParseResult::Incomplete(vec![])
+            },
+            ParseResult::Err(err, remaining) => ParseResult::Err(err, remaining),
+        }
     }
 }
 
@@ -510,6 +514,7 @@ impl <'a> Parser<'a> for DescribeTable {
 
 #[cfg(test)]
 mod test {
+
     use super::{
         BlockComment,
         Command,
@@ -597,7 +602,7 @@ SELECT";
         assert_eq!(parser.parse("-- foo bar bazz\t\r\r\nfuzz"),
                    ParseResult::Ok("-- foo bar bazz\t\r\r\n", "fuzz"));
 
-        assert_eq!(parser.parse("-"), ParseResult::Incomplete(Hint::Constant("--"), "-"));
+        assert_eq!(parser.parse("-"), ParseResult::Incomplete(vec![(Hint::Constant("--"), "-")]));
 
         assert_eq!(parser.parse(" --"), ParseResult::Err("--", " --"));
         assert_eq!(parser.parse("- "), ParseResult::Err("--", "- "));
