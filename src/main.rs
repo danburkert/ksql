@@ -26,7 +26,6 @@ use docopt::Docopt;
 use parser::{
     Parser,
     ParseResult,
-    Hint,
     Commands1,
 };
 

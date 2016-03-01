@@ -7,12 +7,6 @@
 
 use command;
 
-pub struct Error<'a> {
-    expected: Option<Hint<'static>>,
-    context: Option<&'static str>,
-    remaining: &'a str,
-}
-
 /// A hint which indicates what additional input is necessary to achieve a
 /// successful parse.
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
@@ -89,23 +83,7 @@ pub trait Parser<'a> {
 // Parser Combinators
 ////////////////////////////////////////////////////////////////////////////////
 
-/// Applies the parser 0 or more times and returns the list of results in a Vec.
-#[derive(Clone, Debug, Eq, PartialEq, Copy)]
-struct Many0<P>(P);
-impl <'a, T, P> Parser<'a> for Many0<P> where P: Parser<'a, Output=T> {
-    type Output = Vec<T>;
-    fn parse(&self, mut input: &'a str) -> ParseResult<'a, Vec<T>> {
-        let mut output = Vec::new();
-        while let ParseResult::Ok(t, i) = self.0.parse(input) {
-            assert!(i.len() < input.len());
-            input = i;
-            output.push(t);
-        }
-        ParseResult::Ok(output, input)
-    }
-}
-
-/// Applies the parser 1 or more times and returns the list of results in a Vec.
+/// Applies the parser at least one time and returns the list of results in a Vec.
 #[derive(Clone, Debug, Eq, PartialEq, Copy)]
 struct Many1<P>(P);
 impl <'a, T, P> Parser<'a> for Many1<P> where P: Parser<'a, Output=T> {
@@ -113,8 +91,8 @@ impl <'a, T, P> Parser<'a> for Many1<P> where P: Parser<'a, Output=T> {
     fn parse(&self, input: &'a str) -> ParseResult<'a, Vec<T>> {
         let (t, mut remaining) = try_parse!(self.0.parse(input));
         let mut output = vec![t];
-        while let ParseResult::Ok(t, r) = self.0.parse(remaining) {
-            assert!(r.len() < remaining.len());
+        while !remaining.is_empty() {
+            let (t, r) = try_parse!(self.0.parse(remaining));
             remaining = r;
             output.push(t);
         }
@@ -151,7 +129,7 @@ impl <'a, T, P> Parser<'a> for Ignore1<P> where P: Parser<'a, Output=T> {
     }
 }
 
-struct OrElse<P1, P2>(P1, P2);
+pub struct OrElse<P1, P2>(P1, P2);
 impl <'a, T, P1, P2> Parser<'a> for OrElse<P1, P2>
 where P1: Parser<'a, Output=T>,
       P2: Parser<'a, Output=T> {
@@ -195,7 +173,7 @@ where P1: Parser<'a, Output=T>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Copy)]
-struct AndThen<P1, P2>(P1, P2);
+pub struct AndThen<P1, P2>(P1, P2);
 impl <'a, T, P1, P2> Parser<'a> for AndThen<P1, P2>
 where P1: Parser<'a>,
       P2: Parser<'a, Output=T> {
@@ -208,7 +186,7 @@ where P1: Parser<'a>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Copy)]
-struct FollowedBy<P1, P2>(P1, P2);
+pub struct FollowedBy<P1, P2>(P1, P2);
 impl <'a, T, P1, P2> Parser<'a> for FollowedBy<P1, P2>
 where P1: Parser<'a, Output=T>,
       P2: Parser<'a> {
@@ -222,7 +200,7 @@ where P1: Parser<'a, Output=T>,
 
 /// Returns the longest string until the provided function fails.
 #[derive(Clone, Debug, Eq, PartialEq, Copy)]
-struct TakeWhile0<F>(F);
+pub struct TakeWhile0<F>(F);
 impl <'a, F> Parser<'a> for TakeWhile0<F> where F: Fn(char) -> bool {
     type Output = &'a str;
     fn parse(&self, input: &'a str) -> ParseResult<'a, &'a str> {
@@ -238,7 +216,7 @@ impl <'a, F> Parser<'a> for TakeWhile0<F> where F: Fn(char) -> bool {
 
 /// Returns the longest (non-empty) string until the provided function fails.
 #[derive(Clone, Debug, Eq, PartialEq, Copy)]
-struct TakeWhile1<F>(F, Hint<'static>);
+pub struct TakeWhile1<F>(F, Hint<'static>);
 impl <'a, F> Parser<'a> for TakeWhile1<F> where F: Fn(char) -> bool {
     type Output = &'a str;
     fn parse(&self, input: &'a str) -> ParseResult<'a, &'a str> {
@@ -262,7 +240,7 @@ impl <'a, F> Parser<'a> for TakeWhile1<F> where F: Fn(char) -> bool {
 
 /// Transforms the result of a parser.
 #[derive(Clone, Debug, Eq, PartialEq, Copy)]
-struct Map<P, F>(P, F);
+pub struct Map<P, F>(P, F);
 impl <'a, T, U, P, F> Parser<'a> for Map<P, F>
 where P: Parser<'a, Output=T>,
       F: Fn(T) -> U,

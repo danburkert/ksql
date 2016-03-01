@@ -1,5 +1,5 @@
 use std::cmp;
-use std::io::{self, Write};
+use std::io::Write;
 
 use kudu;
 use libc;
@@ -11,71 +11,59 @@ use Color;
 pub struct Terminal {
     out: Box<term::StdoutTerminal>,
     err: Box<term::StderrTerminal>,
-    color_stdout: bool,
-    color_stderr: bool,
+    color: bool,
 }
-
-
-fn stderr_isatty() -> bool {
-    use libc;
-    unsafe { libc::isatty(libc::STDERR_FILENO) != 0 }
-}
-
 
 impl Terminal {
 
-
-
-
+    /// Creates a new terminal.
     pub fn new(color: Color) -> Terminal {
-        let (color_stdout, color_stderr) = match color {
-            Color::Auto => unsafe { (libc::isatty(libc::STDOUT_FILENO) != 0,
-                                     libc::isatty(libc::STDERR_FILENO) != 0) },
-            Color::Always => (true, true),
-            Color::Never => (false, false),
+        let color = match color {
+            Color::Auto => unsafe { libc::isatty(libc::STDERR_FILENO) != 0 },
+            Color::Always => true,
+            Color::Never => false,
         };
 
         Terminal {
             out: term::stdout().expect("unable to open stdout"),
             err: term::stderr().expect("unable to open stderr"),
-            color_stdout: color_stdout,
-            color_stderr: color_stderr,
+            color: color,
         }
     }
 
-    fn stderr_red(&mut self) {
-        if self.color_stderr {
-            self.err.fg(term::color::BRIGHT_RED);
+    /// Colors stderr red.
+    fn red(&mut self) {
+        if self.color {
+            self.err.fg(term::color::BRIGHT_RED).unwrap();
         }
     }
 
-    fn stderr_bold(&mut self) {
-        if self.color_stderr {
-            self.err.attr(term::Attr::Bold);
+    /// Style output to stderr as bold.
+    fn bold(&mut self) {
+        if self.color {
+            self.err.attr(term::Attr::Bold).unwrap();
         }
 
     }
 
-    fn stderr_reset(&mut self) {
-        if self.color_stderr {
-            self.err.reset();
+    /// Resets the style and color of stderr to the default.
+    fn reset(&mut self) {
+        if self.color {
+            self.err.reset().unwrap();
         }
     }
 
-    /// Prints a parse error to the terminal.
+    /// Prints a parse error to stderr.
     pub fn print_parse_error(&mut self, input: &str, remaining: &str, hints: &[Hint]) {
         let error_idx = input.len() - remaining.len();
         assert_eq!(&input[error_idx..], remaining);
         if !input.is_empty() {
-            let mut line_start = 0;
-            for (line_num, line) in input.lines().enumerate() {
+            for line in input.lines() {
 
-                if line_start + line.len() >= error_idx {
-                    let column = error_idx - line_start;
-
-                    self.stderr_red();
-                    write!(self.err, "error: ");
-                    self.stderr_reset();
+                if line.len() >= error_idx {
+                    self.red();
+                    write!(self.err, "error: ").unwrap();
+                    self.reset();
 
                     let hints = hints.into_iter().map(|hint| {
                         match hint {
@@ -84,26 +72,29 @@ impl Terminal {
                         }
                     }).collect::<Vec<_>>();
 
-                    self.stderr_bold();
+                    self.bold();
                     writeln!(self.err, "expected: {}", hints.join(" or ")).unwrap();
-                    self.stderr_reset();
+                    self.reset();
 
-                    let word_len = input[column..].split_whitespace().next().unwrap_or("").len();
+                    let word_len = input[error_idx..].split_whitespace().next().unwrap_or("").len();
                     writeln!(self.err, "{}", line).unwrap();
-                    writeln!(self.err, "{:>2$}{:~<3$}", "", "^", column, word_len).unwrap();
+                    writeln!(self.err, "{:>2$}{:~<3$}", "", "^", error_idx, word_len).unwrap();
                     break;
                 }
             }
         }
+        writeln!(&mut self.out, "").unwrap();
     }
 
+    /// Prints a kudu err to stderr.
     pub fn print_kudu_error(&mut self, error: &kudu::Error) {
-        self.stderr_red();
-        write!(self.err, "error: ");
-        self.stderr_reset();
+        self.red();
+        write!(self.err, "error: ").unwrap();
+        self.reset();
         writeln!(self.err, "{}", error.message()).unwrap();
     }
 
+    /// Prints a table list to stdout.
     pub fn print_tables(&mut self, tables: &[&str]) {
         let width = cmp::max(5, tables.iter().map(|name| name.len()).max().unwrap_or(0));
 
@@ -112,12 +103,12 @@ impl Terminal {
         for table in tables {
             writeln!(&mut self.out, "{:<1$}", table, width).unwrap();
         }
+        writeln!(&mut self.out, "").unwrap();
     }
 
+    /// Prints a table description to stdout.
     pub fn print_table(&mut self, schema: &kudu::Schema) {
         let num_columns = schema.num_columns();
-        let num_primary_key_columns = schema.num_primary_key_columns();
-
         let columns = (0..num_columns).map(|idx| schema.column(idx)).collect::<Vec<_>>();
         let column_width = cmp::max(6, columns.iter().map(|col| col.name().len()).max().unwrap_or(0));
 
@@ -157,6 +148,7 @@ impl Terminal {
                         .map(|col| col.name())
                         .collect::<Vec<_>>()
                         .join(", ")).unwrap();
+        writeln!(&mut self.out, "").unwrap();
     }
 }
 
