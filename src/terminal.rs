@@ -121,7 +121,13 @@ impl Terminal {
             if col.is_nullable() { "True".to_owned() } else { "False".to_owned() }
         }));
 
-        self.print_table(&[&names, &types, &nullables]);
+        let mut encodings = vec!["Encoding".to_owned()];
+        encodings.extend(columns.iter().map(|col| format!("{:?}", col.encoding_type())));
+
+        let mut compressions = vec!["Compression".to_owned()];
+        compressions.extend(columns.iter().map(|col| format!("{:?}", col.compression_type())));
+
+        self.print_table(&[&names, &types, &nullables, &encodings, &compressions]);
     }
 
     fn print_table(&mut self, columns: &[&[String]]) {
