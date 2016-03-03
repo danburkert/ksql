@@ -29,6 +29,16 @@ use parser::{
     Commands1,
 };
 
+static HELP: &'static str = "
+Commands:
+
+    SHOW TABLES;
+        List the name of all Kudu tables.
+
+    DESCRIBE TABLE <table>;
+        Print a description of the table.
+";
+
 static USAGE: &'static str = "
 Usage:
   kudusql [--master=<addr>]... [--color=<color>]

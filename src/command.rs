@@ -8,6 +8,9 @@ pub enum Command<'a> {
     /// /* no-op */ ;
     Noop,
 
+    /// HELP;
+    Help,
+
     /// SHOW TABLES;
     ShowTables,
 
@@ -22,6 +25,7 @@ impl <'a> Command<'a> {
     pub fn execute(self, client: &mut kudu::Client, term: &mut Terminal) {
         match self {
             Command::Noop => (),
+            Command::Help => term.print_help(),
             Command::ShowTables => {
                 match client.list_tables() {
                     Ok(tables) => term.print_table_list(&tables),

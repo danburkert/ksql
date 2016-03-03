@@ -7,6 +7,7 @@ use term;
 
 use parser::Hint;
 use Color;
+use HELP;
 
 pub struct Terminal {
     out: Box<term::StdoutTerminal>,
@@ -92,6 +93,10 @@ impl Terminal {
         write!(self.err, "error: ").unwrap();
         self.reset();
         writeln!(self.err, "{}", error.message()).unwrap();
+    }
+
+    pub fn print_help(&mut self) {
+        writeln!(&mut self.out, "{}", HELP).unwrap();
     }
 
     /// Prints a table list to stdout.

@@ -424,8 +424,9 @@ pub struct Command;
 impl <'a> Parser<'a> for Command {
     type Output = command::Command<'a>;
     fn parse(&self, input: &'a str) -> ParseResult<'a, command::Command<'a>> {
-        let commands = ShowTables.or_else(DescribeTable)
-                                 .or_else(Noop);
+        let commands = Help.or_else(ShowTables)
+                           .or_else(DescribeTable)
+                           .or_else(Noop);
 
         Ignore0(TokenDelimiter)
             .and_then(commands)
@@ -456,6 +457,19 @@ impl <'a> Parser<'a> for Noop {
             },
             ParseResult::Err(err, remaining) => ParseResult::Err(err, remaining),
         }
+    }
+}
+
+/// Parses a HELP statement.
+struct Help;
+impl <'a> Parser<'a> for Help {
+    type Output = command::Command<'a>;
+    fn parse(&self, input: &'a str) -> ParseResult<'a, command::Command<'a>> {
+        Keyword("HELP")
+            .and_then(Ignore0(TokenDelimiter))
+            .and_then(Char(';', ";"))
+            .map(|_| command::Command::Help)
+            .parse(input)
     }
 }
 
