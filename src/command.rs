@@ -24,13 +24,13 @@ impl <'a> Command<'a> {
             Command::Noop => (),
             Command::ShowTables => {
                 match client.list_tables() {
-                    Ok(tables) => term.print_tables(&tables),
+                    Ok(tables) => term.print_table_list(&tables),
                     Err(error) => term.print_kudu_error(&error),
                 }
             },
             Command::DescribeTable { table } => {
                 match client.table_schema(table) {
-                    Ok(schema) => term.print_table(&schema),
+                    Ok(schema) => term.print_table_description(&schema),
                     Err(error) => term.print_kudu_error(&error),
                 }
             },

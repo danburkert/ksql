@@ -95,7 +95,7 @@ impl Terminal {
     }
 
     /// Prints a table list to stdout.
-    pub fn print_tables(&mut self, tables: &[&str]) {
+    pub fn print_table_list(&mut self, tables: &[&str]) {
         let width = cmp::max(5, tables.iter().map(|name| name.len()).max().unwrap_or(0));
 
         writeln!(&mut self.out, "{:<1$}", "Table", width).unwrap();
@@ -107,48 +107,56 @@ impl Terminal {
     }
 
     /// Prints a table description to stdout.
-    pub fn print_table(&mut self, schema: &kudu::Schema) {
-        let num_columns = schema.num_columns();
-        let columns = (0..num_columns).map(|idx| schema.column(idx)).collect::<Vec<_>>();
-        let column_width = cmp::max(6, columns.iter().map(|col| col.name().len()).max().unwrap_or(0));
+    pub fn print_table_description(&mut self, schema: &kudu::Schema) {
+        let columns = (0..schema.num_columns()).map(|idx| schema.column(idx)).collect::<Vec<_>>();
 
-        fn type_width(ty: kudu::DataType) -> usize {
-            match ty {
-                kudu::DataType::Int8 => 4,
-                kudu::DataType::Int16 => 5,
-                kudu::DataType::Int32 => 5,
-                kudu::DataType::Int64 => 5,
-                kudu::DataType::String => 6,
-                kudu::DataType::Bool => 4,
-                kudu::DataType::Float => 5,
-                kudu::DataType::Double => 6,
-                kudu::DataType::Binary => 6,
-                kudu::DataType::Timestamp => 9,
+        let mut names = vec!["Column".to_owned()];
+        names.extend(columns.iter().map(|col| col.name().to_owned()));
+
+        let mut types = vec!["Type".to_owned()];
+        types.extend(columns.iter().map(|col| format!("{:?}", col.data_type())));
+
+        let mut nullables = vec!["Nullable".to_owned()];
+        nullables.extend(columns.iter().map(|col| {
+            if col.is_nullable() { "True".to_owned() } else { "False".to_owned() }
+        }));
+
+        self.print_table(&[&names, &types, &nullables]);
+    }
+
+    fn print_table(&mut self, columns: &[&[String]]) {
+        let rows = columns.iter().fold(None, |prev, col| {
+            let rows = col.len();
+            if let Some(prev_rows) = prev {
+                assert_eq!(prev_rows, rows);
+            }
+            Some(rows)
+        }).expect("there must be at least a header");
+        let widths = columns.iter()
+                            .map(|col| col.iter().map(|cell| cell.len()).max().unwrap_or(0))
+                            .collect::<Vec<_>>();
+
+        for row in 0..rows {
+            for col in 0..columns.len() {
+                if col == 0 {
+                    write!(&mut self.out, " {:<1$} ", columns[col][row], widths[col]).unwrap();
+                } else {
+                    write!(&mut self.out, "| {:<1$} ", columns[col][row], widths[col]).unwrap();
+                }
+            }
+            writeln!(&mut self.out, "").unwrap();
+
+            if row == 0 {
+                for col in 0..columns.len() {
+                    if col == 0 {
+                        write!(&mut self.out, " {:-<1$}", "", widths[col]).unwrap();
+                    } else {
+                        write!(&mut self.out, "-+-{:-<1$}", "", widths[col]).unwrap();
+                    }
+                }
+                writeln!(&mut self.out, "").unwrap();
             }
         }
-
-        let type_width = cmp::max(4, columns.iter().map(|col| type_width(col.data_type())).max().unwrap_or(0));
-
-        writeln!(&mut self.out, " {:<3$} | {:<4$} | {}",
-                 "Column", "Type", "Nullable", column_width, type_width).unwrap();
-        writeln!(&mut self.out, "-{:-^2$}-+-{:-^3$}-+--------",
-                 "", "", column_width, type_width).unwrap();
-        for column in &columns {
-            writeln!(&mut self.out, " {:<3$} | {:<4$} | {}",
-                     column.name(),
-                     format!("{:?}", column.data_type()),
-                     if column.is_nullable() { "True" } else { "False" },
-                     column_width,
-                     type_width).unwrap();
-        }
-        writeln!(&mut self.out, "").unwrap();
-        writeln!(&mut self.out, "PRIMARY KEY ({})",
-                 columns.iter()
-                        .take(schema.num_primary_key_columns())
-                        .map(|col| col.name())
-                        .collect::<Vec<_>>()
-                        .join(", ")).unwrap();
-        writeln!(&mut self.out, "").unwrap();
     }
 }
 
