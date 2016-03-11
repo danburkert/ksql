@@ -127,7 +127,7 @@ fn callback(input: &str) -> Vec<String> {
                 let parsed = &input[..input.len() - remaining.len()];
                 match hint {
                     parser::Hint::Constant(hint) => completions.push(format!("{}{}", parsed, hint)),
-                    parser::Hint::Table(_) => (),
+                    _ => (),
                 }
             }
         },
