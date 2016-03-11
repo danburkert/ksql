@@ -70,6 +70,9 @@ impl Terminal {
                         match hint {
                             &Hint::Constant(ref expected) => format!("'{}'", *expected,),
                             &Hint::Integer => "an integer".to_string(),
+                            &Hint::PosInteger => "a positive integer".to_string(),
+                            &Hint::Float => "a floating point value".to_string(),
+                            &Hint::Timestamp => "a timestamp value".to_string(),
                             &Hint::Value => "a column value".to_string(),
                             &Hint::CharEscape => "a character escape sequence".to_string(),
                             &Hint::HexEscape => "a hex escape sequence".to_string(),

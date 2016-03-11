@@ -6,8 +6,8 @@
 //! ability to return a hint as the result of an incomplete parse.
 
 use std::borrow::Cow;
-use std::cmp;
 
+use chrono;
 use kudu;
 
 use command;
@@ -21,6 +21,15 @@ pub enum Hint<'a> {
 
     /// Hint with an integer value.
     Integer,
+
+    /// Hint with a positive integer value.
+    PosInteger,
+
+    /// Hint with a floating point value.
+    Float,
+
+    /// Hint witha timestamp value.
+    Timestamp,
 
     /// Hint with a column value.
     Value,
@@ -200,14 +209,18 @@ where P1: Parser<'a, Output=T>,
                     },
                 }
             },
-            ParseResult::Err(error1, remaining1) => {
+            ParseResult::Err(mut error1, remaining1) => {
                 match self.1.parse(input) {
                     ParseResult::Ok(t, remaining) => ParseResult::Ok(t, remaining),
                     ParseResult::Incomplete(hints2) => ParseResult::Incomplete(hints2),
                     ParseResult::Err(error2, remaining2) => {
                         // Both parses errored. Return the error result for the
                         // parse which made the most progress.
-                        if remaining1.len() <= remaining2.len() {
+                        if remaining1.len() == remaining2.len() {
+                            debug_assert!(remaining1 == remaining2);
+                            error1.extend_from_slice(&error2);
+                            ParseResult::Err(error1, remaining1)
+                        } else if remaining1.len() < remaining2.len() {
                             ParseResult::Err(error1, remaining1)
                         } else {
                             ParseResult::Err(error2, remaining2)
@@ -393,7 +406,7 @@ impl <'a> Parser<'a> for I32 {
         let (int, rest) = input.split_at(idx);
         match int.parse::<i32>() {
             Ok(int) => ParseResult::Ok(int, rest),
-            Err(error) => ParseResult::Err(vec![Hint::Integer], input),
+            Err(_) => ParseResult::Err(vec![Hint::Integer], input),
         }
     }
 }
@@ -482,11 +495,21 @@ struct TokenDelimiter;
 impl <'a> Parser<'a> for TokenDelimiter {
     type Output = &'a str;
     fn parse(&self, input: &'a str) -> ParseResult<'a, &'a str> {
-        TakeWhile1(is_multispace, Hint::Constant(" "))
-            .or_else(LineComment)
-            .or_else(BlockComment)
-            .map_incomplete(|_| vec![(Hint::Constant(" "), input)])
-            .parse(input)
+        // Limit to 1 hint so that comments aren't given as a hint, unless they
+        // are a partial match.
+        match TakeWhile1(is_multispace, Hint::Constant(" ")).or_else(LineComment)
+                                                            .or_else(BlockComment)
+                                                            .parse(input) {
+            ParseResult::Ok(value, remaining) => ParseResult::Ok(value, remaining),
+            ParseResult::Incomplete(mut hints) => {
+                hints.truncate(1);
+                ParseResult::Incomplete(hints)
+            },
+            ParseResult::Err(mut hints, remaining) => {
+                hints.truncate(1);
+                ParseResult::Err(hints, remaining)
+            }
+        }
     }
 }
 
@@ -544,6 +567,111 @@ impl <'a> Parser<'a> for ColumnName {
     }
 }
 
+struct BoolLiteral;
+impl <'a> Parser<'a> for BoolLiteral {
+    type Output = bool;
+    fn parse(&self, input: &'a str) -> ParseResult<'a, bool> {
+        Tag("true").map(|_| true)
+                   .or_else(Tag("false").map(|_| false))
+                   .parse(input)
+    }
+}
+
+struct IntLiteral;
+impl <'a> Parser<'a> for IntLiteral {
+    type Output = i64;
+    fn parse(&self, input: &'a str) -> ParseResult<'a, i64> {
+        let remaining = match Optional(Char('-', "")).and_then(TakeWhile1(is_numeric, Hint::Integer))
+                                                     .parse(input) {
+            ParseResult::Ok(_, remaining) => remaining,
+            ParseResult::Incomplete(..) => return ParseResult::Incomplete(vec![(Hint::Integer, input)]),
+            ParseResult::Err(..) => return ParseResult::Err(vec![Hint::Integer], input),
+        };
+
+        let (int, rest) = input.split_at(input.len() - remaining.len());
+        match int.parse::<i64>() {
+            Ok(int) => ParseResult::Ok(int, rest),
+            Err(_) => ParseResult::Err(vec![Hint::Integer], input),
+        }
+    }
+}
+
+struct PosIntLiteral;
+impl <'a> Parser<'a> for PosIntLiteral {
+    type Output = u64;
+    fn parse(&self, input: &'a str) -> ParseResult<'a, u64> {
+        let (int, rest) = try_parse!(TakeWhile1(is_numeric, Hint::PosInteger).parse(input)); 
+        match int.parse::<u64>() {
+            Ok(int) => ParseResult::Ok(int, rest),
+            Err(_) => ParseResult::Err(vec![Hint::PosInteger], input),
+        }
+    }
+}
+
+struct FloatLiteral;
+impl <'a> Parser<'a> for FloatLiteral {
+    type Output = f64;
+    fn parse(&self, input: &'a str) -> ParseResult<'a, f64> {
+        if input.is_empty() { return ParseResult::Incomplete(vec![(Hint::Float, input)]); }
+        let remaining = match Optional(Char('-', ""))
+                                .and_then(TakeWhile0(is_numeric))
+                                .and_then(Optional(Char('.', "").and_then(TakeWhile0(is_numeric))))
+                                .and_then(Optional(Char('e', "").and_then(Optional(IntLiteral))))
+                                .parse(input) {
+            ParseResult::Ok(_, remaining) => remaining,
+            ParseResult::Incomplete(..) => return ParseResult::Incomplete(vec![(Hint::Float, input)]),
+            ParseResult::Err(..) => return ParseResult::Err(vec![Hint::Float], input),
+        };
+
+        let (int, rest) = input.split_at(input.len() - remaining.len());
+
+        match int.parse::<f64>() {
+            Ok(int) => ParseResult::Ok(int, rest),
+            Err(_) => ParseResult::Err(vec![Hint::Float], input),
+        }
+    }
+}
+
+struct TimestampLiteral;
+impl <'a> Parser<'a> for TimestampLiteral {
+    type Output = chrono::DateTime<chrono::FixedOffset>;
+    fn parse(&self, input: &'a str) -> ParseResult<'a, chrono::DateTime<chrono::FixedOffset>> {
+
+        // 1990-12-31T23:59:60.0123Z
+        // or
+        // 1996-12-19T16:39:57-08:00
+
+        if input.is_empty() { return ParseResult::Incomplete(vec![(Hint::Timestamp, input)]); }
+        let remaining = match TakeWhile1(is_numeric, Hint::Constant(""))
+                                 .and_then(Char('-', ""))
+                                 .and_then(TakeWhile1(is_numeric, Hint::Constant("")))
+                                 .and_then(Char('-', ""))
+                                 .and_then(TakeWhile1(is_numeric, Hint::Constant("")))
+                                 .and_then(Char('T', ""))
+                                 .and_then(TakeWhile1(is_numeric, Hint::Constant("")))
+                                 .and_then(Char(':', ""))
+                                 .and_then(TakeWhile1(is_numeric, Hint::Constant("")))
+                                 .and_then(Char(':', ""))
+                                 .and_then(TakeWhile1(is_numeric, Hint::Constant("")))
+                                 .and_then(Optional(Char('.', "").and_then(TakeWhile1(is_numeric, Hint::Constant("")))))
+                                 .and_then(Char('Z', "").or_else(Char('-', "").followed_by(TakeWhile1(is_numeric, Hint::Constant("")))
+                                                                              .followed_by(Char(':', ""))
+                                                                              .followed_by(TakeWhile1(is_numeric, Hint::Constant("")))))
+                                 .parse(input) {
+            ParseResult::Ok(_, remaining) => remaining,
+            ParseResult::Incomplete(..) => return ParseResult::Incomplete(vec![(Hint::Timestamp, input)]),
+            ParseResult::Err(..) => return ParseResult::Err(vec![Hint::Timestamp], input),
+        };
+
+        let timestamp = &input[..input.len() - remaining.len()];
+
+        match chrono::DateTime::parse_from_rfc3339(timestamp) {
+            Ok(timestamp) => ParseResult::Ok(timestamp, remaining),
+            Err(_) => ParseResult::Err(vec![Hint::Timestamp], input),
+        }
+    }
+}
+
 struct DoubleQuotedStringLiteral;
 impl <'a> Parser<'a> for DoubleQuotedStringLiteral {
     type Output = Cow<'a, str>;
@@ -591,11 +719,6 @@ impl <'a> Parser<'a> for DoubleQuotedStringLiteral {
         ParseResult::Incomplete(vec![(Hint::Constant("\""), "")])
     }
 }
-
-struct IntegerLiteral;
-struct FloatLiteral;
-struct TimestampLiteral;
-
 
 struct HexLiteral;
 impl <'a> Parser<'a> for HexLiteral {
@@ -877,9 +1000,11 @@ mod test {
     use std::borrow::Cow;
 
     use kudu;
+    use chrono;
 
     use super::{
         BlockComment,
+        BoolLiteral,
         Char,
         ColumnName,
         Command,
@@ -889,16 +1014,20 @@ mod test {
         Delimited1,
         DescribeTable,
         DoubleQuotedStringLiteral,
+        FloatLiteral,
         HexLiteral,
         Hint,
         I32,
         Ignore0,
+        IntLiteral,
         Keyword,
         LineComment,
         Noop,
         Parser,
         ParseResult,
+        PosIntLiteral,
         ShowTables,
+        TimestampLiteral,
         TokenDelimiter,
     };
     use command;
@@ -1197,5 +1326,126 @@ SELECT";
                    ParseResult::Err(vec![Hint::HexEscape], "0zab"));
         assert_eq!(parser.parse("0x01234zab"),
                    ParseResult::Err(vec![Hint::HexEscape], "4zab"));
+    }
+
+    #[test]
+    fn test_int_literal() {
+        let parser = IntLiteral;
+        assert_eq!(parser.parse("9"),
+                   ParseResult::Ok(9, ""));
+        assert_eq!(parser.parse("1234"),
+                   ParseResult::Ok(1234, ""));
+        assert_eq!(parser.parse("01234"),
+                   ParseResult::Ok(1234, ""));
+        assert_eq!(parser.parse("-01234"),
+                   ParseResult::Ok(-1234, ""));
+        assert_eq!(parser.parse("-01234.1234"),
+                   ParseResult::Ok(-1234, ".1234"));
+        assert_eq!(parser.parse("234xyz"),
+                   ParseResult::Ok(234, "xyz"));
+
+        assert_eq!(parser.parse(""),
+                   ParseResult::Incomplete(vec![(Hint::Integer, "")]));
+        assert_eq!(parser.parse("-"),
+                   ParseResult::Incomplete(vec![(Hint::Integer, "-")]));
+
+        assert_eq!(parser.parse("f"),
+                   ParseResult::Err(vec![Hint::Integer], "f"));
+        assert_eq!(parser.parse("-f"),
+                   ParseResult::Err(vec![Hint::Integer], "-f"));
+    }
+
+    #[test]
+    fn test_pos_int_literal() {
+        let parser = PosIntLiteral;
+        assert_eq!(parser.parse("9"),
+                   ParseResult::Ok(9, ""));
+        assert_eq!(parser.parse("1234"),
+                   ParseResult::Ok(1234, ""));
+        assert_eq!(parser.parse("01234"),
+                   ParseResult::Ok(1234, ""));
+        assert_eq!(parser.parse("234xyz"),
+                   ParseResult::Ok(234, "xyz"));
+
+        assert_eq!(parser.parse(""),
+                   ParseResult::Incomplete(vec![(Hint::PosInteger, "")]));
+
+        assert_eq!(parser.parse("f"),
+                   ParseResult::Err(vec![Hint::PosInteger], "f"));
+        assert_eq!(parser.parse("-9"),
+                   ParseResult::Err(vec![Hint::PosInteger], "-9"));
+    }
+
+    #[test]
+    fn test_float_literal() {
+        let parser = FloatLiteral;
+        assert_eq!(parser.parse("9"),
+                   ParseResult::Ok(9.0, ""));
+        assert_eq!(parser.parse("9.0"),
+                   ParseResult::Ok(9.0, ""));
+        assert_eq!(parser.parse("01234"),
+                   ParseResult::Ok(1234.0, ""));
+        assert_eq!(parser.parse("234xyz"),
+                   ParseResult::Ok(234.0, "xyz"));
+        assert_eq!(parser.parse("-9"),
+                   ParseResult::Ok(-9.0, ""));
+        assert_eq!(parser.parse("-1234e3"),
+                   ParseResult::Ok(-1234000.0, ""));
+        assert_eq!(parser.parse("-1234e-3"),
+                   ParseResult::Ok(-1.234, ""));
+        assert_eq!(parser.parse("-.e-3.xyz"),
+                   ParseResult::Ok(0.0, ".xyz"));
+
+        assert_eq!(parser.parse(""),
+                   ParseResult::Incomplete(vec![(Hint::Float, "")]));
+
+        assert_eq!(parser.parse("f"),
+                   ParseResult::Err(vec![Hint::Float], "f"));
+        assert_eq!(parser.parse("123.45ef"),
+                   ParseResult::Err(vec![Hint::Float], "123.45ef"));
+    }
+
+    #[test]
+    fn test_bool_literal() {
+        let parser = BoolLiteral;
+        assert_eq!(parser.parse("true"),
+                   ParseResult::Ok(true, ""));
+        assert_eq!(parser.parse("false"),
+                   ParseResult::Ok(false, ""));
+
+        assert_eq!(parser.parse(""),
+                   ParseResult::Incomplete(vec![(Hint::Constant("true"), ""),
+                                                (Hint::Constant("false"), "")]));
+        assert_eq!(parser.parse("tru"),
+                   ParseResult::Incomplete(vec![(Hint::Constant("true"), "tru")]));
+        assert_eq!(parser.parse("f"),
+                   ParseResult::Incomplete(vec![(Hint::Constant("false"), "f")]));
+
+        assert_eq!(parser.parse("x"),
+                   ParseResult::Err(vec![Hint::Constant("true"), Hint::Constant("false")], "x"));
+    }
+
+    #[test]
+    fn test_timestamp_literal() {
+        let parser = TimestampLiteral;
+        assert_eq!(parser.parse("1990-12-31T23:59:60Z"),
+                   ParseResult::Ok(chrono::DateTime::parse_from_rfc3339("1990-12-31T23:59:60Z").unwrap(), ""));
+        assert_eq!(parser.parse("1996-12-19T16:39:57-08:00"),
+                   ParseResult::Ok(chrono::DateTime::parse_from_rfc3339("1996-12-19T16:39:57-08:00").unwrap(), ""));
+        assert_eq!(parser.parse("1996-12-19T16:39:57.1234-12:00"),
+                   ParseResult::Ok(chrono::DateTime::parse_from_rfc3339("1996-12-19T16:39:57.1234-12:00").unwrap(), ""));
+
+        assert_eq!(parser.parse("1996-12-19T16:39:57.1234Zoo.foo"),
+                   ParseResult::Ok(chrono::DateTime::parse_from_rfc3339("1996-12-19T16:39:57.1234Z").unwrap(), "oo.foo"));
+
+        assert_eq!(parser.parse(""),
+                   ParseResult::Incomplete(vec![(Hint::Timestamp, "")]));
+        assert_eq!(parser.parse("1990-"),
+                   ParseResult::Incomplete(vec![(Hint::Timestamp, "1990-")]));
+
+        assert_eq!(parser.parse("x"),
+                   ParseResult::Err(vec![Hint::Timestamp], "x"));
+        assert_eq!(parser.parse("1996-42-19T16:39:57Z"),
+                   ParseResult::Err(vec![Hint::Timestamp], "1996-42-19T16:39:57Z"));
     }
 }
