@@ -69,7 +69,14 @@ impl Terminal {
                     let hints = hints.into_iter().map(|hint| {
                         match hint {
                             &Hint::Constant(ref expected) => format!("'{}'", *expected,),
+                            &Hint::Integer => "an integer".to_string(),
+                            &Hint::PosInteger => "a positive integer".to_string(),
+                            &Hint::Float => "a floating point value".to_string(),
+                            &Hint::Timestamp => "a timestamp value".to_string(),
+                            &Hint::CharEscape => "a character escape sequence".to_string(),
+                            &Hint::HexEscape => "a hex escape sequence".to_string(),
                             &Hint::Table(_) => "a table name".to_string(),
+                            &Hint::Column(_) => "a column name".to_string(),
                         }
                     }).collect::<Vec<_>>();
 
@@ -93,6 +100,10 @@ impl Terminal {
         write!(self.err, "error: ").unwrap();
         self.reset();
         writeln!(self.err, "{}", error.message()).unwrap();
+    }
+
+    pub fn print_success(&mut self, msg: &str) {
+        writeln!(self.out, "{}", msg).unwrap();
     }
 
     pub fn print_help(&mut self) {
@@ -169,35 +180,4 @@ impl Terminal {
             }
         }
     }
-}
-
-#[cfg(test)]
-mod test {
-
-    use parser::{
-        Command,
-        Hint,
-        Parser,
-        ParseResult,
-    };
-
-    use super::write_parse_error;
-
-    /*
-    #[test]
-    fn test_write_parse_error() {
-        fn test(input: &str, msg: &str) {
-            if let ParseResult::Err(expected, remaining) = Command.parse(input) {
-                let mut actual = Vec::new();
-                write_parse_error(&mut actual, input, remaining, expected);
-                assert_eq!(msg.as_bytes(), &actual[..]);
-            } else {
-                panic!("expected parse to fail")
-            }
-        }
-
-        test("DESCRIBE foo;",
-             "Error: expected TABLE\nDESCRIBE foo;\n         ^");
-    }
-    */
 }
