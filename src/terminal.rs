@@ -73,7 +73,6 @@ impl Terminal {
                             &Hint::PosInteger => "a positive integer".to_string(),
                             &Hint::Float => "a floating point value".to_string(),
                             &Hint::Timestamp => "a timestamp value".to_string(),
-                            &Hint::Value => "a column value".to_string(),
                             &Hint::CharEscape => "a character escape sequence".to_string(),
                             &Hint::HexEscape => "a hex escape sequence".to_string(),
                             &Hint::Table(_) => "a table name".to_string(),
@@ -101,6 +100,10 @@ impl Terminal {
         write!(self.err, "error: ").unwrap();
         self.reset();
         writeln!(self.err, "{}", error.message()).unwrap();
+    }
+
+    pub fn print_success(&mut self, msg: &str) {
+        writeln!(self.out, "{}", msg).unwrap();
     }
 
     pub fn print_help(&mut self) {
