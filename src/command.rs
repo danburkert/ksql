@@ -23,12 +23,22 @@ pub enum Command<'a> {
         table: &'a str,
     },
 
+    /// DROP TABLE <table>;
+    DropTable {
+        table: &'a str,
+    },
+
+    /// CREATE TABLE <table> (<col> <data-type> [NULLABLE | NOT NULL] [ENCODING <encoding>] [COMPRESSION <compression>] [BLOCK SIZE <block-size>], ..)
+    /// PRIMARY KEY (<col>, ..)
+    /// [DISTRIBUTE BY [RANGE (<col>, ..) [SPLIT ROWS (<col-val>, ..)[, (<col-val>, ..)..]]]
+    ///                [HASH (<col>, ..) [WITH SEED <seed>] INTO <buckets> BUCKETS]..;
     CreateTable {
         name: &'a str,
         columns: Vec<CreateColumn<'a>>,
         primary_key: Vec<&'a str>,
         range_partition: Option<RangePartition<'a>>,
         hash_partitions: Vec<HashPartition<'a>>,
+        replicas: Option<i32>,
     }
 }
 
@@ -39,19 +49,25 @@ impl <'a> Command<'a> {
             Command::Noop => (),
             Command::Help => term.print_help(),
             Command::ShowTables => {
-                match client.list_tables() {
+                match client.list_tables("") {
                     Ok(tables) => term.print_table_list(&tables),
                     Err(error) => term.print_kudu_error(&error),
                 }
             },
             Command::DescribeTable { table } => {
-                match client.table_schema(table) {
+                match client.get_table_schema(table) {
                     Ok(schema) => term.print_table_description(&schema),
                     Err(error) => term.print_kudu_error(&error),
                 }
             },
-            Command::CreateTable { name, columns, primary_key, range_partition, hash_partitions } => {
-                match create_table(client, name, columns, primary_key, range_partition, hash_partitions) {
+            Command::DropTable { table } => {
+                match client.delete_table(table) {
+                    Ok(_) => term.print_success("table dropped"),
+                    Err(error) => term.print_kudu_error(&error),
+                }
+            },
+            Command::CreateTable { name, columns, primary_key, range_partition, hash_partitions, replicas } => {
+                match create_table(client, name, columns, primary_key, range_partition, hash_partitions, replicas) {
                     Ok(_) => term.print_success("table created"),
                     Err(error) => term.print_kudu_error(&error),
                 }
@@ -65,7 +81,8 @@ fn create_table(client: &mut kudu::Client,
                 columns: Vec<CreateColumn>,
                 primary_key: Vec<&str>,
                 range_partition: Option<RangePartition>,
-                hash_partitions: Vec<HashPartition>)
+                hash_partitions: Vec<HashPartition>,
+                replicas: Option<i32>)
                 -> kudu::Result<()> {
     let mut schema = kudu::SchemaBuilder::new();
     for column in columns {
@@ -85,15 +102,23 @@ fn create_table(client: &mut kudu::Client,
         }
     }
     schema.set_primary_key_columns(&primary_key);
+    let schema = try!(schema.build());
 
     let mut creator = client.new_table_creator();
     creator.table_name(name);
-    let schema = try!(schema.build());
     creator.schema(&schema);
 
     if let Some(range_partition) = range_partition {
         creator.set_range_partition_columns(&range_partition.columns);
-        let rows = try!(build_rows(&schema, &range_partition.split_rows));
+
+        // Find column by name in schema, then map into the index and type
+        let mut columns = Vec::with_capacity(range_partition.columns.len());
+        for column in range_partition.columns {
+            let index = try!(schema.find_column(column));
+            columns.push((index, schema.column(index).data_type()));
+        }
+
+        let rows = try!(build_rows(&schema, &columns, &range_partition.split_rows));
         for row in rows {
             creator.add_split_row(row);
         }
@@ -105,20 +130,19 @@ fn create_table(client: &mut kudu::Client,
                                     hash_partition.seed.unwrap_or(0));
     }
 
+    if let Some(replicas) = replicas {
+        creator.num_replicas(replicas);
+    }
+
     creator.create()
 }
 
-fn build_rows<'a>(schema: &'a kudu::Schema, values: &'a [Vec<Literal>]) -> kudu::Result<Vec<kudu::PartialRow<'a>>> {
-    let columns: Vec<(usize, kudu::DataType)> = (0..schema.num_columns()).map(|column_idx| {
-        (column_idx, schema.column(column_idx).data_type())
-    }).collect();
-
-    let mut rows = Vec::with_capacity(values.len());
-
-    for column_values in values {
-        if columns.len() != column_values.len() { panic!("wrong number of column values") };
+fn build_rows<'a>(schema: &'a kudu::Schema, columns: &[(usize, kudu::DataType)], literal_rows: &'a [Vec<Literal>]) -> kudu::Result<Vec<kudu::PartialRow<'a>>> {
+    let mut rows = Vec::with_capacity(literal_rows.len());
+    for literal_columns in literal_rows {
+        if columns.len() != literal_columns.len() { panic!("wrong number of column values") };
         let mut row: kudu::PartialRow<'a> = schema.new_row();
-        for (&(column_idx, data_type), value) in columns.iter().zip(column_values) {
+        for (&(column_idx, data_type), value) in columns.iter().zip(literal_columns) {
             match (data_type, value) {
                 (_, &Literal::Bool(b)) => try!(row.set(column_idx, b)),
                 (kudu::DataType::Int8, &Literal::Integer(i)) => try!(row.set(column_idx, i as i8)),

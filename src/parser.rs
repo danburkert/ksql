@@ -807,6 +807,7 @@ impl <'a> Parser<'a> for Command {
         let commands = Help.or_else(ShowTables)
                            .or_else(DescribeTable)
                            .or_else(CreateTable)
+                           .or_else(DropTable)
                            .or_else(Noop);
 
         Ignore0(TokenDelimiter)
@@ -879,6 +880,21 @@ impl <'a> Parser<'a> for DescribeTable {
             .and_then(Keyword("TABLE"))
             .and_then(Ignore1(TokenDelimiter))
             .and_then(TableName).map(|table| command::Command::DescribeTable { table: table })
+            .followed_by(Ignore0(TokenDelimiter))
+            .followed_by(Char(';', ";"))
+            .parse(input)
+    }
+}
+
+struct DropTable;
+impl <'a> Parser<'a> for DropTable {
+    type Output = command::Command<'a>;
+    fn parse(&self, input: &'a str) -> ParseResult<'a, command::Command<'a>> {
+        Keyword("DROP")
+            .and_then(Ignore1(TokenDelimiter))
+            .and_then(Keyword("TABLE"))
+            .and_then(Ignore1(TokenDelimiter))
+            .and_then(TableName).map(|table| command::Command::DropTable { table: table })
             .followed_by(Ignore0(TokenDelimiter))
             .followed_by(Char(';', ";"))
             .parse(input)
@@ -1001,7 +1017,7 @@ impl <'a> Parser<'a> for PrimaryKey {
     }
 }
 
-// RANGE (a, b, c) SPLIT ROWS [(123), (456)];
+// RANGE (a, b, c) SPLIT ROWS (123), (456);
 struct RangePartition;
 impl <'a> Parser<'a> for RangePartition {
     type Output = command::RangePartition<'a>;
@@ -1020,12 +1036,8 @@ impl <'a> Parser<'a> for RangePartition {
                                               .and_then(Ignore1(TokenDelimiter))
                                               .and_then(Keyword("ROWS"))
                                               .and_then(Ignore0(TokenDelimiter))
-                                              .and_then(Char('[', "["))
-                                              .and_then(Ignore0(TokenDelimiter))
                                               .and_then(Delimited1(Row, Ignore0(TokenDelimiter).and_then(Char(',', ","))
-                                                                                               .and_then(Ignore0(TokenDelimiter))))
-                                              .followed_by(Ignore0(TokenDelimiter))
-                                              .followed_by(Char(']', "]")))
+                                                                                               .and_then(Ignore0(TokenDelimiter)))))
                                               .map(|o| o.unwrap_or(Vec::new()))
                                               .parse(remaining));
         ParseResult::Ok(command::RangePartition::new(columns, split_rows), remaining)
@@ -1066,7 +1078,20 @@ impl <'a> Parser<'a> for HashPartition {
     }
 }
 
-
+// WITH 1 REPLICA
+// WITH 3 REPLICAS
+struct Replicas;
+impl <'a> Parser<'a> for Replicas {
+    type Output = i32;
+    fn parse(&self, input: &'a str) -> ParseResult<'a, i32> {
+        Keyword("WITH").and_then(Ignore1(TokenDelimiter))
+                       .and_then(PosIntLiteral)
+                       .map(|i| { i as i32 })
+                       .followed_by(Ignore1(TokenDelimiter))
+                       .followed_by(OrElse(Keyword("REPLICAS"), Keyword("REPLICA")))
+                       .parse(input)
+    }
+}
 
 struct CreateTable;
 impl <'a> Parser<'a> for CreateTable {
@@ -1105,6 +1130,9 @@ impl <'a> Parser<'a> for CreateTable {
             (None, Vec::new(), remaining)
         };
 
+        let (replicas, remaining) =
+            try_parse!(Optional(Ignore1(TokenDelimiter).and_then(Replicas)).parse(remaining));
+
         let (_, remaining) =
             try_parse!(Ignore0(TokenDelimiter).and_then(Char(';', ";")).parse(remaining));
 
@@ -1114,6 +1142,7 @@ impl <'a> Parser<'a> for CreateTable {
             primary_key: primary_key,
             range_partition: range_partition,
             hash_partitions: hash_partitions,
+            replicas: replicas,
         }, remaining)
     }
 }
@@ -1408,6 +1437,7 @@ SELECT";
                        primary_key: vec!["a", "c"],
                        range_partition: None,
                        hash_partitions: Vec::new(),
+                       replicas: None,
                    }, ""));
 
         assert_eq!(parser.parse("create table t (foo int32) primary key (foo) DISTRIBUTE BY RANGE (foo);"),
@@ -1417,6 +1447,7 @@ SELECT";
                        primary_key: vec!["foo"],
                        range_partition: Some(command::RangePartition::new(vec!["foo"], vec![])),
                        hash_partitions: Vec::new(),
+                       replicas: None,
                    }, ""));
 
         assert_eq!(parser.parse("create table t (foo int32) primary key (foo) DISTRIBUTE BY HASH (foo, bar) INTO 99 buckets;"),
@@ -1426,14 +1457,16 @@ SELECT";
                        primary_key: vec!["foo"],
                        range_partition: None,
                        hash_partitions: vec![command::HashPartition::new(vec!["foo", "bar"], None, 99)],
+                       replicas: None,
                    }, ""));
 
         assert_eq!(parser.parse("create table t (foo int32) \
                                 primary key (foo) \
                                 DISTRIBUTE BY \
-                                    RANGE (a) SPLIT ROWS [(1), (2)] \
+                                    RANGE (a) SPLIT ROWS (1), (2) \
                                     HASH (b) INTO 99 buckets \
-                                    hash (c) with seed 9 into 50 buckets;"),
+                                    hash (c) with seed 9 into 50 buckets \
+                                WITH 10 REPLICAS;"),
                    ParseResult::Ok(command::Command::CreateTable {
                        name: "t",
                        columns: vec![command::CreateColumn::new("foo", kudu::DataType::Int32, None, None, None, None)],
@@ -1442,6 +1475,7 @@ SELECT";
                                                                                           vec![command::Literal::Integer(2)]])),
                        hash_partitions: vec![command::HashPartition::new(vec!["b"], None, 99),
                                              command::HashPartition::new(vec!["c"], Some(9), 50)],
+                       replicas: Some(10),
                    }, ""));
     }
 
@@ -1673,7 +1707,7 @@ SELECT";
     fn test_range_partition() {
         let parser = RangePartition;
 
-        assert_eq!(parser.parse("RANGE(a, b, c) SPLIT ROWS [(123), (123, \"foo\")]"),
+        assert_eq!(parser.parse("RANGE(a, b, c) SPLIT ROWS (123), (123, \"foo\")"),
                    ParseResult::Ok(command::RangePartition::new(vec!["a", "b", "c"],
                                                                 vec![vec![command::Literal::Integer(123)],
                                                                         vec![command::Literal::Integer(123),

@@ -111,7 +111,7 @@ impl Terminal {
     }
 
     /// Prints a table list to stdout.
-    pub fn print_table_list(&mut self, tables: &[&str]) {
+    pub fn print_table_list(&mut self, tables: &[String]) {
         let width = cmp::max(5, tables.iter().map(|name| name.len()).max().unwrap_or(0));
 
         writeln!(&mut self.out, "{:<1$}", "Table", width).unwrap();

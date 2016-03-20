@@ -92,6 +92,7 @@ fn main() {
         match val {
             None => { break }
             Some(ref input) => {
+                linenoise::history_add(&input);
                 match Commands1.parse(input) {
                     ParseResult::Ok(commands, remaining) => {
                         assert!(remaining.is_empty());
