@@ -28,6 +28,12 @@ pub enum Command<'a> {
         table: &'a str,
     },
 
+    Insert {
+        table: &'a str,
+        columns: Option<Vec<&'a str>>,
+        rows: Vec<Vec<Literal<'a>>>,
+    },
+
     /// CREATE TABLE <table> (<col> <data-type> [NULLABLE | NOT NULL] [ENCODING <encoding>] [COMPRESSION <compression>] [BLOCK SIZE <block-size>], ..)
     /// PRIMARY KEY (<col>, ..)
     /// [DISTRIBUTE BY [RANGE (<col>, ..) [SPLIT ROWS (<col-val>, ..)[, (<col-val>, ..)..]]]
@@ -63,6 +69,13 @@ impl <'a> Command<'a> {
             Command::DropTable { table } => {
                 match client.delete_table(table) {
                     Ok(_) => term.print_success("table dropped"),
+                    Err(error) => term.print_kudu_error(&error),
+                }
+            },
+            Command::Insert { table, columns, rows } => {
+                let count = rows.len();
+                match insert(client, table, columns, rows) {
+                    Ok(_) => term.print_success(&format!("{} rows inserted", count)),
                     Err(error) => term.print_kudu_error(&error),
                 }
             },
@@ -137,36 +150,82 @@ fn create_table(client: &mut kudu::Client,
     creator.create()
 }
 
+fn insert(client: &mut kudu::Client,
+          table: &str,
+          columns: Option<Vec<&str>>,
+          rows: Vec<Vec<Literal>>)
+          -> kudu::Result<()> {
+    let schema = try!(client.get_table_schema(table));
+    let mut session = client.new_session();
+    session.set_timeout(&Duration::from_secs(60));
+    try!(session.set_flush_mode(kudu::FlushMode::ManualFlush));
+
+    // Find column by name in schema, then map into the index and type
+    let num_columns = columns.as_ref().map(|cols| cols.len()).unwrap_or(schema.num_columns());
+    let mut column_types = Vec::with_capacity(num_columns);
+    if let Some(columns) = columns {
+        for column in columns {
+            let index = try!(schema.find_column(column));
+            column_types.push((index, schema.column(index).data_type()));
+        }
+    } else {
+        for index in 0..schema.num_columns() {
+            column_types.push((index, schema.column(index).data_type()));
+        }
+    }
+
+    let table = try!(client.open_table(table));
+
+    for row in rows {
+        if session.count_buffered_operations() > 1000 {
+            try!(session.flush());
+        };
+        let mut insert = table.new_insert();
+        try!(populate_row(&mut insert.row(), &column_types, &row));
+        try!(session.insert(insert))
+    }
+
+    try!(session.flush());
+    session.close()
+}
+
+/// Sets the columns in the partial row to the provided literal values.
+fn populate_row<'a>(row: &mut kudu::PartialRow<'a>, columns: &[(usize, kudu::DataType)], values: &'a [Literal]) -> kudu::Result<()> {
+    if columns.len() != values.len() { panic!("wrong number of column values") };
+
+    for (&(column_idx, data_type), value) in columns.iter().zip(values) {
+        match (data_type, value) {
+            (_, &Literal::Bool(b)) => try!(row.set(column_idx, b)),
+            (kudu::DataType::Int8, &Literal::Integer(i)) => try!(row.set(column_idx, i as i8)),
+            (kudu::DataType::Int16, &Literal::Integer(i)) => try!(row.set(column_idx, i as i16)),
+            (kudu::DataType::Int32, &Literal::Integer(i)) => try!(row.set(column_idx, i as i32)),
+            (_, &Literal::Integer(i)) => try!(row.set(column_idx, i as i64)),
+            (_, &Literal::Timestamp(t)) => {
+                let epoch: chrono::DateTime<chrono::UTC> = chrono::DateTime::from_utc(chrono::NaiveDateTime::from_timestamp(0, 0), chrono::UTC);
+                let value = (t - epoch).num_microseconds().unwrap();
+                let time = if value < 0 {
+                    let value = !(value as u64) + 1;
+                    UNIX_EPOCH - Duration::new(value / 1000_000, (value % 1000_000) as u32 * 1000)
+                } else {
+                    let value = value as u64;
+                    UNIX_EPOCH + Duration::new(value / 1000_000, (value % 1000_000) as u32 * 1000)
+                };
+                try!(row.set(column_idx, time))
+            },
+            (kudu::DataType::Float, &Literal::Float(f)) => try!(row.set(column_idx, f as f32)),
+            (_, &Literal::Float(f)) => try!(row.set(column_idx, f)),
+            (_, &Literal::String(ref s)) => try!(row.set(column_idx, &s[..])),
+            (_, &Literal::Binary(ref b)) => try!(row.set(column_idx, &b[..])),
+        };
+    };
+    Ok(())
+}
+
 fn build_rows<'a>(schema: &'a kudu::Schema, columns: &[(usize, kudu::DataType)], literal_rows: &'a [Vec<Literal>]) -> kudu::Result<Vec<kudu::PartialRow<'a>>> {
     let mut rows = Vec::with_capacity(literal_rows.len());
     for literal_columns in literal_rows {
-        if columns.len() != literal_columns.len() { panic!("wrong number of column values") };
         let mut row: kudu::PartialRow<'a> = schema.new_row();
-        for (&(column_idx, data_type), value) in columns.iter().zip(literal_columns) {
-            match (data_type, value) {
-                (_, &Literal::Bool(b)) => try!(row.set(column_idx, b)),
-                (kudu::DataType::Int8, &Literal::Integer(i)) => try!(row.set(column_idx, i as i8)),
-                (kudu::DataType::Int16, &Literal::Integer(i)) => try!(row.set(column_idx, i as i16)),
-                (kudu::DataType::Int32, &Literal::Integer(i)) => try!(row.set(column_idx, i as i32)),
-                (_, &Literal::Integer(i)) => try!(row.set(column_idx, i as i64)),
-                (_, &Literal::Timestamp(t)) => {
-                    let epoch: chrono::DateTime<chrono::UTC> = chrono::DateTime::from_utc(chrono::NaiveDateTime::from_timestamp(0, 0), chrono::UTC);
-                    let value = (t - epoch).num_microseconds().unwrap();
-                    let time = if value < 0 {
-                        let value = !(value as u64) + 1;
-                        UNIX_EPOCH - Duration::new(value / 1000_000, (value % 1000_000) as u32 * 1000)
-                    } else {
-                        let value = value as u64;
-                        UNIX_EPOCH + Duration::new(value / 1000_000, (value % 1000_000) as u32 * 1000)
-                    };
-                    try!(row.set(column_idx, time))
-                },
-                (kudu::DataType::Float, &Literal::Float(f)) => try!(row.set(column_idx, f as f32)),
-                (_, &Literal::Float(f)) => try!(row.set(column_idx, f)),
-                (_, &Literal::String(ref s)) => try!(row.set(column_idx, &s[..])),
-                (_, &Literal::Binary(ref b)) => try!(row.set(column_idx, &b[..])),
-            };
-        };
+        populate_row(&mut row, columns, literal_columns).unwrap();
         rows.push(row);
     };
 

@@ -806,6 +806,7 @@ impl <'a> Parser<'a> for Command {
     fn parse(&self, input: &'a str) -> ParseResult<'a, command::Command<'a>> {
         let commands = Help.or_else(ShowTables)
                            .or_else(DescribeTable)
+                           .or_else(Insert)
                            .or_else(CreateTable)
                            .or_else(DropTable)
                            .or_else(Noop);
@@ -1161,6 +1162,44 @@ impl <'a> Parser<'a> for Row {
     }
 }
 
+struct Insert;
+impl <'a> Parser<'a> for Insert {
+    type Output = command::Command<'a>;
+    fn parse(&self, input: &'a str) -> ParseResult<'a, command::Command<'a>> {
+        let (table, remaining) = try_parse!(
+            Keyword("INSERT").and_then(Ignore1(TokenDelimiter))
+                             .and_then(Keyword("INTO"))
+                             .and_then(Ignore1(TokenDelimiter))
+                             .and_then(TableName)
+                             .parse(input));
+
+        let (columns, remaining) =
+            try_parse!(Optional(Ignore1(TokenDelimiter).and_then(Char('(', "("))
+                                                       .and_then(Delimited1(Ignore0(TokenDelimiter).and_then(ColumnName),
+                                                                            Ignore0(TokenDelimiter).and_then(Char(',', ","))))
+                                                       .followed_by(Ignore0(TokenDelimiter))
+                                                       .followed_by(Char(')', ")")))
+                                                       .parse(remaining));
+
+        let (rows, remaining) =
+            try_parse!(Ignore1(TokenDelimiter).and_then(Keyword("VALUES"))
+                                              .and_then(Ignore0(TokenDelimiter))
+                                              .and_then(Delimited1(Row, Ignore0(TokenDelimiter).and_then(Char(',', ","))
+                                                                                               .and_then(Ignore0(TokenDelimiter))))
+                                              .parse(remaining));
+
+        let (_, remaining) =
+            try_parse!(Ignore0(TokenDelimiter).and_then(Char(';', ";")).parse(remaining));
+
+        ParseResult::Ok(command::Command::Insert {
+            table: table,
+            columns: columns,
+            rows: rows,
+        }, remaining)
+    }
+}
+
+
 #[cfg(test)]
 mod test {
 
@@ -1187,6 +1226,7 @@ mod test {
         Hint,
         I32,
         Ignore0,
+        Insert,
         IntLiteral,
         Keyword,
         LineComment,
@@ -1730,5 +1770,32 @@ SELECT";
 
         assert_eq!(parser.parse("HASH () INTO 99 BUCKETS HASH"),
                    ParseResult::Err(vec![Hint::Column("")], ") INTO 99 BUCKETS HASH"));
+    }
+
+
+    #[test]
+    fn test_insert() {
+        let parser = Insert;
+        assert_eq!(parser.parse("insert into t values (1);"),
+                   ParseResult::Ok(command::Command::Insert {
+                       table: "t",
+                       columns: None,
+                       rows: vec![vec![command::Literal::Integer(1)]],
+                   }, ""));
+
+        assert_eq!(parser.parse("insert into t (foo, bar) values (1, 2);"),
+                   ParseResult::Ok(command::Command::Insert {
+                       table: "t",
+                       columns: Some(vec!["foo", "bar"]),
+                       rows: vec![vec![command::Literal::Integer(1), command::Literal::Integer(2)]],
+                   }, ""));
+
+        assert_eq!(parser.parse("insert into t values (1, 2), (99);"),
+                   ParseResult::Ok(command::Command::Insert {
+                       table: "t",
+                       columns: None,
+                       rows: vec![vec![command::Literal::Integer(1), command::Literal::Integer(2)],
+                                  vec![command::Literal::Integer(99)]],
+                   }, ""));
     }
 }
