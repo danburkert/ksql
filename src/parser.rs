@@ -80,12 +80,6 @@ pub trait Parser<'a> {
         Map(self, f)
     }
 
-    fn map_incomplete<F>(self, f: F) -> MapIncomplete<Self, F>
-    where Self: Sized,
-          F: Fn(Vec<(Hint<'a>, &'a str)>) -> Vec<(Hint<'a>, &'a str)> {
-        MapIncomplete(self, f)
-    }
-
     /// Returns a new parser which evaluates this parser, and if it succeeds,
     /// returns the result of evaluating the provided parser.
     fn and_then<T, P>(self, p: P) -> AndThen<Self, P> where Self: Sized, P: Parser<'a, Output=T> {
@@ -159,13 +153,13 @@ where P: Parser<'a, Output=T>,
         let mut output = vec![t];
         loop {
             if let ParseResult::Ok(_, r) = self.1.parse(remaining) {
-                if let ParseResult::Ok(t, r) = self.0.parse(r) {
-                    remaining = r;
-                    output.push(t);
-                } else { break; }
-            } else { break; }
+                let (t, r) = try_parse!(self.0.parse(r));
+                remaining = r;
+                output.push(t);
+            } else {
+                return ParseResult::Ok(output, remaining)
+            }
         }
-        ParseResult::Ok(output, remaining)
     }
 }
 
@@ -325,24 +319,6 @@ where P: Parser<'a, Output=T>,
     }
 }
 
-/// Transforms the incomplete result of a parser.
-#[derive(Clone, Debug, Eq, PartialEq, Copy)]
-pub struct MapIncomplete<P, F>(P, F);
-impl <'a, T, P, F> Parser<'a> for MapIncomplete<P, F>
-where P: Parser<'a, Output=T>,
-      F: Fn(Vec<(Hint<'a>, &'a str)>) -> Vec<(Hint<'a>, &'a str)>,
-{
-    type Output = T;
-    fn parse(&self, input: &'a str) -> ParseResult<'a, T> {
-
-        match self.0.parse(input) {
-            ParseResult::Ok(t, rest) => ParseResult::Ok(t, rest),
-            ParseResult::Incomplete(hints) => ParseResult::Incomplete(self.1(hints)),
-            ParseResult::Err(hints, rest) => ParseResult::Err(hints, rest),
-        }
-    }
-}
-
 #[derive(Clone, Debug, Eq, PartialEq, Copy)]
 pub struct Optional<P>(P);
 impl <'a, P, T> Parser<'a> for Optional<P>
@@ -351,6 +327,37 @@ where P: Parser<'a, Output=T> {
     fn parse(&self, input: &'a str) -> ParseResult<'a, Option<T>> {
         if let ParseResult::Ok(v, remaining) = self.0.parse(input) {
             ParseResult::Ok(Some(v), remaining)
+        } else {
+            ParseResult::Ok(None, input)
+        }
+    }
+}
+
+/// Parses an optional clause with mandatory leading whitespace.
+#[derive(Clone, Debug, Eq, PartialEq, Copy)]
+pub struct OptionalClause<P>(P);
+impl <'a, P, T> Parser<'a> for OptionalClause<P>
+where P: Parser<'a, Output=T> {
+    type Output = Option<T>;
+    fn parse(&self, input: &'a str) -> ParseResult<'a, Option<T>> {
+        if let ParseResult::Ok(_, remaining1) = Chomp1.parse(input) {
+            match self.0.parse(remaining1) {
+                ParseResult::Ok(v, remaining2) => ParseResult::Ok(Some(v), remaining2),
+                ParseResult::Incomplete(hints) => {
+                    if hints.iter().any(|hint| hint.1.len() < remaining1.len()) {
+                        ParseResult::Incomplete(hints)
+                    } else {
+                        ParseResult::Ok(None, input)
+                    }
+                },
+                ParseResult::Err(hints, remaining2) => {
+                    if remaining2.len() < remaining1.len() {
+                        ParseResult::Err(hints, remaining2)
+                    } else {
+                        ParseResult::Ok(None, input)
+                    }
+                },
+            }
         } else {
             ParseResult::Ok(None, input)
         }
@@ -523,6 +530,24 @@ impl <'a> Parser<'a> for TokenDelimiter {
                 ParseResult::Err(hints, remaining)
             }
         }
+    }
+}
+
+/// Parses 0 or more token delimiters.
+struct Chomp0;
+impl <'a> Parser<'a> for Chomp0 {
+    type Output = ();
+    fn parse(&self, input: &'a str) -> ParseResult<'a, ()> {
+        Ignore0(TokenDelimiter).parse(input)
+    }
+}
+
+/// Parses 1 or more token delimiters.
+struct Chomp1;
+impl <'a> Parser<'a> for Chomp1 {
+    type Output = ();
+    fn parse(&self, input: &'a str) -> ParseResult<'a, ()> {
+        Ignore1(TokenDelimiter).parse(input)
     }
 }
 
@@ -791,6 +816,7 @@ impl <'a> Parser<'a> for Literal {
                    .or_else(FloatLiteral.map(|f| command::Literal::Float(f)))
                    .or_else(IntLiteral.map(|i| command::Literal::Integer(i)))
                    .or_else(DoubleQuotedStringLiteral.map(|s| command::Literal::String(s)))
+                   .or_else(Keyword("NULL").map(|_| command::Literal::Null))
                    .parse(input)
     }
 }
@@ -806,19 +832,18 @@ impl <'a> Parser<'a> for Command {
     fn parse(&self, input: &'a str) -> ParseResult<'a, command::Command<'a>> {
         let commands = Help.or_else(ShowTables)
                            .or_else(DescribeTable)
+                           .or_else(Select)
                            .or_else(Insert)
                            .or_else(CreateTable)
                            .or_else(DropTable)
                            .or_else(Noop);
 
-        Ignore0(TokenDelimiter)
-            .and_then(commands)
-            .followed_by(Ignore0(TokenDelimiter))
-            .parse(input)
+        Chomp0.and_then(commands)
+              .followed_by(Chomp0)
+              .parse(input)
     }
 }
 
-/// Parses 1 or more SQL statements into commands.
 pub struct Commands1;
 impl <'a> Parser<'a> for Commands1 {
     type Output = Vec<command::Command<'a>>;
@@ -849,7 +874,7 @@ impl <'a> Parser<'a> for Help {
     type Output = command::Command<'a>;
     fn parse(&self, input: &'a str) -> ParseResult<'a, command::Command<'a>> {
         Keyword("HELP")
-            .and_then(Ignore0(TokenDelimiter))
+            .and_then(Chomp0)
             .and_then(Char(';', ";"))
             .map(|_| command::Command::Help)
             .parse(input)
@@ -862,9 +887,9 @@ impl <'a> Parser<'a> for ShowTables {
     type Output = command::Command<'a>;
     fn parse(&self, input: &'a str) -> ParseResult<'a, command::Command<'a>> {
         Keyword("SHOW")
-            .and_then(Ignore1(TokenDelimiter))
+            .and_then(Chomp1)
             .and_then(Keyword("TABLES"))
-            .and_then(Ignore0(TokenDelimiter))
+            .and_then(Chomp0)
             .and_then(Char(';', ";"))
             .map(|_| command::Command::ShowTables)
             .parse(input)
@@ -877,11 +902,11 @@ impl <'a> Parser<'a> for DescribeTable {
     type Output = command::Command<'a>;
     fn parse(&self, input: &'a str) -> ParseResult<'a, command::Command<'a>> {
         Keyword("DESCRIBE")
-            .and_then(Ignore1(TokenDelimiter))
+            .and_then(Chomp1)
             .and_then(Keyword("TABLE"))
-            .and_then(Ignore1(TokenDelimiter))
+            .and_then(Chomp1)
             .and_then(TableName).map(|table| command::Command::DescribeTable { table: table })
-            .followed_by(Ignore0(TokenDelimiter))
+            .followed_by(Chomp0)
             .followed_by(Char(';', ";"))
             .parse(input)
     }
@@ -892,11 +917,11 @@ impl <'a> Parser<'a> for DropTable {
     type Output = command::Command<'a>;
     fn parse(&self, input: &'a str) -> ParseResult<'a, command::Command<'a>> {
         Keyword("DROP")
-            .and_then(Ignore1(TokenDelimiter))
+            .and_then(Chomp1)
             .and_then(Keyword("TABLE"))
-            .and_then(Ignore1(TokenDelimiter))
+            .and_then(Chomp1)
             .and_then(TableName).map(|table| command::Command::DropTable { table: table })
-            .followed_by(Ignore0(TokenDelimiter))
+            .followed_by(Chomp0)
             .followed_by(Char(';', ";"))
             .parse(input)
     }
@@ -924,7 +949,7 @@ struct EncodingType;
 impl <'a> Parser<'a> for EncodingType {
     type Output = kudu::EncodingType;
     fn parse(&self, input: &'a str) -> ParseResult<'a, kudu::EncodingType> {
-        Keyword("ENCODING").and_then(Ignore1(TokenDelimiter))
+        Keyword("ENCODING").and_then(Chomp1)
                        .and_then(Keyword("DEFAULT").map(|_| kudu::EncodingType::Default)
                         .or_else(Keyword("PLAIN").map(|_| kudu::EncodingType::Plain))
                         .or_else(Keyword("PREFIX").map(|_| kudu::EncodingType::Prefix))
@@ -940,7 +965,7 @@ struct CompressionType;
 impl <'a> Parser<'a> for CompressionType {
     type Output = kudu::CompressionType;
     fn parse(&self, input: &'a str) -> ParseResult<'a, kudu::CompressionType> {
-        Keyword("COMPRESSION").and_then(Ignore1(TokenDelimiter))
+        Keyword("COMPRESSION").and_then(Chomp1)
                               .and_then(Keyword("DEFAULT").map(|_| kudu::CompressionType::Default)
                                .or_else(Keyword("NONE").map(|_| kudu::CompressionType::None))
                                .or_else(Keyword("SNAPPY").map(|_| kudu::CompressionType::Snappy))
@@ -954,9 +979,9 @@ struct BlockSize;
 impl <'a> Parser<'a> for BlockSize {
     type Output = i32;
     fn parse(&self, input: &'a str) -> ParseResult<'a, i32> {
-        Keyword("BLOCK").and_then(Ignore1(TokenDelimiter))
+        Keyword("BLOCK").and_then(Chomp1)
                         .and_then(Keyword("SIZE"))
-                        .and_then(Ignore1(TokenDelimiter))
+                        .and_then(Chomp1)
                         .and_then(I32)
                         .parse(input)
     }
@@ -967,7 +992,7 @@ impl <'a> Parser<'a> for Nullable {
     type Output = bool;
     fn parse(&self, input: &'a str) -> ParseResult<'a, bool> {
         Keyword("NULLABLE").map(|_| true)
-                           .or_else(Keyword("NOT").and_then(Ignore1(TokenDelimiter))
+                           .or_else(Keyword("NOT").and_then(Chomp1)
                                                   .and_then(Keyword("NULL"))
                                                   .map(|_| false))
                            .parse(input)
@@ -979,17 +1004,12 @@ impl <'a> Parser<'a> for CreateColumn {
     type Output = command::CreateColumn<'a>;
     fn parse(&self, input: &'a str) -> ParseResult<'a, command::CreateColumn<'a>> {
         let (name, remaining) = try_parse!(ColumnName.parse(input));
-        let (data_type, remaining) =
-            try_parse!(Ignore1(TokenDelimiter).and_then(DataType).parse(remaining));
-        let (nullable, remaining) =
-            try_parse!(Optional(Ignore1(TokenDelimiter).and_then(Nullable)).parse(remaining));
+        let (data_type, remaining) = try_parse!(Chomp1.and_then(DataType).parse(remaining));
 
-        let (encoding_type, remaining) =
-            try_parse!(Optional(Ignore1(TokenDelimiter).and_then(EncodingType)).parse(remaining));
-        let (compression_type, remaining) =
-            try_parse!(Optional(Ignore1(TokenDelimiter).and_then(CompressionType)).parse(remaining));
-        let (block_size, remaining) =
-            try_parse!(Optional(Ignore1(TokenDelimiter).and_then(BlockSize)).parse(remaining));
+        let (nullable, remaining) = try_parse!(OptionalClause(Nullable).parse(remaining));
+        let (encoding_type, remaining) = try_parse!(OptionalClause(EncodingType).parse(remaining));
+        let (compression_type, remaining) = try_parse!(OptionalClause(CompressionType).parse(remaining));
+        let (block_size, remaining) = try_parse!(OptionalClause(BlockSize).parse(remaining));
 
         ParseResult::Ok(command::CreateColumn::new(name,
                                                    data_type,
@@ -1005,14 +1025,14 @@ struct PrimaryKey;
 impl <'a> Parser<'a> for PrimaryKey {
     type Output = Vec<&'a str>;
     fn parse(&self, input: &'a str) -> ParseResult<'a, Vec<&'a str>> {
-        Keyword("PRIMARY").and_then(Ignore1(TokenDelimiter))
+        Keyword("PRIMARY").and_then(Chomp1)
                           .and_then(Keyword("KEY"))
-                          .and_then(Ignore0(TokenDelimiter))
+                          .and_then(Chomp0)
                           .and_then(Char('(', "("))
-                          .and_then(Ignore0(TokenDelimiter))
-                          .and_then(Delimited1(ColumnName, Ignore0(TokenDelimiter).and_then(Char(',', ","))
-                                                                                  .and_then(Ignore0(TokenDelimiter))))
-                          .followed_by(Ignore0(TokenDelimiter))
+                          .and_then(Chomp0)
+                          .and_then(Delimited1(ColumnName, Chomp0.and_then(Char(',', ","))
+                                                                 .and_then(Chomp0)))
+                          .followed_by(Chomp0)
                           .followed_by(Char(')', ")"))
                           .parse(input)
     }
@@ -1024,23 +1044,23 @@ impl <'a> Parser<'a> for RangePartition {
     type Output = command::RangePartition<'a>;
     fn parse(&self, input: &'a str) -> ParseResult<'a, command::RangePartition<'a>> {
         let (columns, remaining) =
-            try_parse!(Keyword("RANGE").and_then(Ignore0(TokenDelimiter))
+            try_parse!(Keyword("RANGE").and_then(Chomp0)
                                        .and_then(Char('(', "("))
-                                       .and_then(Ignore0(TokenDelimiter))
-                                       .and_then(Delimited1(ColumnName, Ignore0(TokenDelimiter).and_then(Char(',', ","))
-                                                                                               .and_then(Ignore0(TokenDelimiter))))
-                                       .followed_by(Ignore0(TokenDelimiter))
+                                       .and_then(Chomp0)
+                                       .and_then(Delimited1(ColumnName, Chomp0.and_then(Char(',', ","))
+                                                                                               .and_then(Chomp0)))
+                                       .followed_by(Chomp0)
                                        .followed_by(Char(')', ")"))
                                        .parse(input));
+
         let (split_rows, remaining) =
-            try_parse!(Optional(Ignore1(TokenDelimiter).and_then(Keyword("SPLIT"))
-                                              .and_then(Ignore1(TokenDelimiter))
-                                              .and_then(Keyword("ROWS"))
-                                              .and_then(Ignore0(TokenDelimiter))
-                                              .and_then(Delimited1(Row, Ignore0(TokenDelimiter).and_then(Char(',', ","))
-                                                                                               .and_then(Ignore0(TokenDelimiter)))))
-                                              .map(|o| o.unwrap_or(Vec::new()))
-                                              .parse(remaining));
+            try_parse!(OptionalClause(Keyword("SPLIT").and_then(Chomp1)
+                                                      .and_then(Keyword("ROWS"))
+                                                      .and_then(Chomp0)
+                                                      .and_then(Delimited1(Row, Chomp0.and_then(Char(',', ","))
+                                                                                                      .and_then(Chomp0))))
+                       .map(|o| o.unwrap_or(Vec::new()))
+                       .parse(remaining));
         ParseResult::Ok(command::RangePartition::new(columns, split_rows), remaining)
     }
 }
@@ -1051,29 +1071,26 @@ impl <'a> Parser<'a> for HashPartition {
     type Output = command::HashPartition<'a>;
     fn parse(&self, input: &'a str) -> ParseResult<'a, command::HashPartition<'a>> {
         let (columns, remaining) =
-            try_parse!(Keyword("HASH").and_then(Ignore0(TokenDelimiter))
-                                       .and_then(Char('(', "("))
-                                       .and_then(Ignore0(TokenDelimiter))
-                                       .and_then(Delimited1(ColumnName, Ignore0(TokenDelimiter).and_then(Char(',', ","))
-                                                                                               .and_then(Ignore0(TokenDelimiter))))
-                                       .followed_by(Ignore0(TokenDelimiter))
-                                       .followed_by(Char(')', ")"))
-                                       .parse(input));
-        let (seed, remaining) =
-            try_parse!(Optional(Ignore1(TokenDelimiter).and_then(Keyword("WITH"))
-                                                       .and_then(Ignore1(TokenDelimiter))
-                                                       .and_then(Keyword("SEED"))
-                                                       .and_then(Ignore1(TokenDelimiter))
-                                                       .and_then(I32))
-                                                       .parse(remaining));
+            try_parse!(Keyword("HASH").and_then(Chomp0)
+                                      .and_then(Char('(', "("))
+                                      .and_then(Chomp0)
+                                      .and_then(Delimited1(ColumnName, Chomp0.and_then(Char(',', ","))
+                                                                             .and_then(Chomp0)))
+                                      .followed_by(Chomp0)
+                                      .followed_by(Char(')', ")"))
+                                      .parse(input));
 
-        let (buckets, remaining) =
-            try_parse!(Ignore1(TokenDelimiter).and_then(Keyword("INTO"))
-                                              .and_then(Ignore1(TokenDelimiter))
-                                              .and_then(I32)
-                                              .followed_by(Ignore1(TokenDelimiter))
-                                              .followed_by(Keyword("BUCKETS"))
-                                              .parse(remaining));
+        let (seed, remaining) = try_parse!(OptionalClause(Keyword("WITH").and_then(Chomp1)
+                                                                         .and_then(Keyword("SEED"))
+                                                                         .and_then(Chomp1)
+                                                                         .and_then(I32)).parse(remaining));
+
+        let (buckets, remaining) = try_parse!(Chomp1.and_then(Keyword("INTO"))
+                                                    .and_then(Chomp1)
+                                                    .and_then(I32)
+                                                    .followed_by(Chomp1)
+                                                    .followed_by(Keyword("BUCKETS"))
+                                                    .parse(remaining));
 
         ParseResult::Ok(command::HashPartition::new(columns, seed, buckets), remaining)
     }
@@ -1085,10 +1102,10 @@ struct Replicas;
 impl <'a> Parser<'a> for Replicas {
     type Output = i32;
     fn parse(&self, input: &'a str) -> ParseResult<'a, i32> {
-        Keyword("WITH").and_then(Ignore1(TokenDelimiter))
+        Keyword("WITH").and_then(Chomp1)
                        .and_then(PosIntLiteral)
                        .map(|i| { i as i32 })
-                       .followed_by(Ignore1(TokenDelimiter))
+                       .followed_by(Chomp1)
                        .followed_by(OrElse(Keyword("REPLICAS"), Keyword("REPLICA")))
                        .parse(input)
     }
@@ -1099,43 +1116,42 @@ impl <'a> Parser<'a> for CreateTable {
     type Output = command::Command<'a>;
     fn parse(&self, input: &'a str) -> ParseResult<'a, command::Command<'a>> {
         let (name, remaining) = try_parse!(
-            Keyword("CREATE").and_then(Ignore1(TokenDelimiter))
+            Keyword("CREATE").and_then(Chomp1)
                              .and_then(Keyword("TABLE"))
-                             .and_then(Ignore1(TokenDelimiter))
+                             .and_then(Chomp1)
                              .and_then(TableName)
                              .parse(input));
 
         let (columns, remaining) =
-            try_parse!(Ignore1(TokenDelimiter).and_then(Char('(', "("))
-                                              .and_then(Delimited1(Ignore0(TokenDelimiter).and_then(CreateColumn),
-                                                                   Ignore0(TokenDelimiter).and_then(Char(',', ","))))
-                                              .followed_by(Ignore0(TokenDelimiter))
+            try_parse!(Chomp1.and_then(Char('(', "("))
+                                              .and_then(Delimited1(Chomp0.and_then(CreateColumn),
+                                                                   Chomp0.and_then(Char(',', ","))))
+                                              .followed_by(Chomp0)
                                               .followed_by(Char(')', ")"))
                                               .parse(remaining));
 
         let (primary_key, remaining) =
-            try_parse!(Ignore1(TokenDelimiter).and_then(PrimaryKey).parse(remaining));
+            try_parse!(Chomp1.and_then(PrimaryKey).parse(remaining));
 
         let (distribute_by, remaining) =
-            try_parse!(Optional(Ignore1(TokenDelimiter).and_then(Keyword("DISTRIBUTE"))
-                                                       .and_then(Ignore1(TokenDelimiter))
-                                                       .and_then(Keyword("BY"))).parse(remaining));
+            try_parse!(OptionalClause(Keyword("DISTRIBUTE").and_then(Chomp1)
+                                                           .and_then(Keyword("BY")))
+                       .parse(remaining));
 
         let (range_partition, hash_partitions, remaining) = if distribute_by.is_some() {
             let (range_partition, remaining) =
-                try_parse!(Optional(Ignore1(TokenDelimiter).and_then(RangePartition)).parse(remaining));
+                try_parse!(OptionalClause(RangePartition).parse(remaining));
             let (hash_partitions, remaining) =
-                try_parse!(Many0(Ignore1(TokenDelimiter).and_then(HashPartition)).parse(remaining));
+                try_parse!(Many0(Chomp1.and_then(HashPartition)).parse(remaining));
             (range_partition, hash_partitions, remaining)
         } else {
             (None, Vec::new(), remaining)
         };
 
-        let (replicas, remaining) =
-            try_parse!(Optional(Ignore1(TokenDelimiter).and_then(Replicas)).parse(remaining));
+        let (replicas, remaining) = try_parse!(OptionalClause(Replicas).parse(remaining));
 
         let (_, remaining) =
-            try_parse!(Ignore0(TokenDelimiter).and_then(Char(';', ";")).parse(remaining));
+            try_parse!(Chomp0.and_then(Char(';', ";")).parse(remaining));
 
         ParseResult::Ok(command::Command::CreateTable {
             name: name,
@@ -1153,10 +1169,10 @@ struct Row;
 impl <'a> Parser<'a> for Row {
     type Output = Vec<command::Literal<'a>>;
     fn parse(&self, input: &'a str) -> ParseResult<'a, Vec<command::Literal<'a>>> {
-        Char('(', "(").and_then(Ignore0(TokenDelimiter))
-                      .and_then(Delimited1(Literal, Ignore0(TokenDelimiter).and_then(Char(',', ","))
-                                                                           .and_then(Ignore0(TokenDelimiter))))
-                      .followed_by(Ignore0(TokenDelimiter))
+        Char('(', "(").and_then(Chomp0)
+                      .and_then(Delimited1(Literal, Chomp0.and_then(Char(',', ","))
+                                                                           .and_then(Chomp0)))
+                      .followed_by(Chomp0)
                       .followed_by(Char(')', ")"))
                       .parse(input)
     }
@@ -1167,29 +1183,27 @@ impl <'a> Parser<'a> for Insert {
     type Output = command::Command<'a>;
     fn parse(&self, input: &'a str) -> ParseResult<'a, command::Command<'a>> {
         let (table, remaining) = try_parse!(
-            Keyword("INSERT").and_then(Ignore1(TokenDelimiter))
+            Keyword("INSERT").and_then(Chomp1)
                              .and_then(Keyword("INTO"))
-                             .and_then(Ignore1(TokenDelimiter))
+                             .and_then(Chomp1)
                              .and_then(TableName)
                              .parse(input));
 
         let (columns, remaining) =
-            try_parse!(Optional(Ignore1(TokenDelimiter).and_then(Char('(', "("))
-                                                       .and_then(Delimited1(Ignore0(TokenDelimiter).and_then(ColumnName),
-                                                                            Ignore0(TokenDelimiter).and_then(Char(',', ","))))
-                                                       .followed_by(Ignore0(TokenDelimiter))
-                                                       .followed_by(Char(')', ")")))
-                                                       .parse(remaining));
+            try_parse!(OptionalClause(Char('(', "(").and_then(Delimited1(Chomp0.and_then(ColumnName),
+                                                                         Chomp0.and_then(Char(',', ","))))
+                                                    .followed_by(Chomp0)
+                                                    .followed_by(Char(')', ")")))
+                       .parse(remaining));
 
         let (rows, remaining) =
-            try_parse!(Ignore1(TokenDelimiter).and_then(Keyword("VALUES"))
-                                              .and_then(Ignore0(TokenDelimiter))
-                                              .and_then(Delimited1(Row, Ignore0(TokenDelimiter).and_then(Char(',', ","))
-                                                                                               .and_then(Ignore0(TokenDelimiter))))
+            try_parse!(Chomp1.and_then(Keyword("VALUES"))
+                                              .and_then(Chomp0)
+                                              .and_then(Delimited1(Row, Chomp0.and_then(Char(',', ","))
+                                                                              .and_then(Chomp0)))
                                               .parse(remaining));
 
-        let (_, remaining) =
-            try_parse!(Ignore0(TokenDelimiter).and_then(Char(';', ";")).parse(remaining));
+        let (_, remaining) = try_parse!(Chomp0.and_then(Char(';', ";")).parse(remaining));
 
         ParseResult::Ok(command::Command::Insert {
             table: table,
@@ -1199,6 +1213,54 @@ impl <'a> Parser<'a> for Insert {
     }
 }
 
+// Parses '*', 'COUNT(*)' or 'col1, col2, ..'
+struct Selector;
+impl <'a> Parser<'a> for Selector {
+    type Output = command::Selector<'a>;
+    fn parse(&self, input: &'a str) -> ParseResult<'a, command::Selector<'a>> {
+        let star = Char('*', "*").map(|_| command::Selector::Star);
+        let count_star = Keyword("COUNT").and_then(Chomp0)
+                                         .and_then(Char('(', "("))
+                                         .and_then(Chomp0)
+                                         .and_then(Char('*', "*"))
+                                         .and_then(Chomp0)
+                                         .and_then(Char(')', ")"))
+                                         .map(|_| command::Selector::CountStar);
+        let columns = Delimited1(ColumnName, Chomp0.and_then(Char(',', ","))
+                                                                    .and_then(Chomp0))
+                        .map(|columns| command::Selector::Columns(columns));
+        star.or_else(count_star.or_else(columns)).parse(input)
+    }
+}
+
+// Parses:
+//  SELECT * FROM foo;
+//  SELECT a, b, c FROM foo;
+//  SELECT COUNT(*) FROM foo;
+struct Select;
+impl <'a> Parser<'a> for Select {
+    type Output = command::Command<'a>;
+    fn parse(&self, input: &'a str) -> ParseResult<'a, command::Command<'a>> {
+        let (selector, remaining) =
+            try_parse!(Keyword("SELECT").and_then(Chomp1)
+                                        .and_then(Selector)
+                                        .parse(input));
+
+        let (table, remaining) =
+            try_parse!(Chomp1.and_then(Keyword("FROM"))
+                                              .and_then(Chomp1)
+                                              .and_then(TableName)
+                                              .parse(remaining));
+
+        let (_, remaining) =
+            try_parse!(Chomp0.and_then(Char(';', ";")).parse(remaining));
+
+        ParseResult::Ok(command::Command::Select {
+            table: table,
+            selector: selector,
+        }, remaining)
+    }
+}
 
 #[cfg(test)]
 mod test {
@@ -1212,6 +1274,7 @@ mod test {
         BlockComment,
         BoolLiteral,
         Char,
+        Chomp0,
         ColumnName,
         Command,
         CreateColumn,
@@ -1225,7 +1288,6 @@ mod test {
         HexLiteral,
         Hint,
         I32,
-        Ignore0,
         Insert,
         IntLiteral,
         Keyword,
@@ -1237,6 +1299,7 @@ mod test {
         PosIntLiteral,
         RangePartition,
         Row,
+        Select,
         ShowTables,
         TimestampLiteral,
         TokenDelimiter,
@@ -1451,14 +1514,11 @@ SELECT";
 
     #[test]
     fn test_delimited() {
-        let parser = Delimited1(Keyword("FUZZ"),
-                                Ignore0(TokenDelimiter).followed_by(Char(',', ","))
-                                                       .followed_by(Ignore0(TokenDelimiter)));
+        let parser = Delimited1(Keyword("FUZZ"), Chomp0.followed_by(Char(',', ",")).followed_by(Chomp0));
         assert_eq!(parser.parse("fuzz, fuzz    -- sdf \n , fuzz,fuzz,fuzz;"),
                    ParseResult::Ok(vec!["fuzz", "fuzz", "fuzz", "fuzz", "fuzz"], ";"));
         assert_eq!(parser.parse("fuzz,; fuzz"),
-                   ParseResult::Ok(vec!["fuzz"], ",; fuzz"));
-
+                   error(Hint::Constant("FUZZ"), "; fuzz"));
         assert_eq!(parser.parse(",; fuzz"),
                    error(Hint::Constant("FUZZ"), ",; fuzz"));
     }
@@ -1772,7 +1832,6 @@ SELECT";
                    ParseResult::Err(vec![Hint::Column("")], ") INTO 99 BUCKETS HASH"));
     }
 
-
     #[test]
     fn test_insert() {
         let parser = Insert;
@@ -1797,5 +1856,16 @@ SELECT";
                        rows: vec![vec![command::Literal::Integer(1), command::Literal::Integer(2)],
                                   vec![command::Literal::Integer(99)]],
                    }, ""));
+    }
+
+    #[test]
+    fn test_select() {
+        let parser = Select;
+        assert_eq!(parser.parse("select * from t;"),
+                   ParseResult::Ok(command::Command::Select {
+                       table: "t",
+                       selector: command::Selector::Star,
+                   }, ""));
+
     }
 }

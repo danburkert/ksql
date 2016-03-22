@@ -100,14 +100,17 @@ impl Terminal {
         write!(self.err, "error: ").unwrap();
         self.reset();
         writeln!(self.err, "{}", error.message()).unwrap();
+        writeln!(&mut self.out, "").unwrap();
     }
 
     pub fn print_success(&mut self, msg: &str) {
         writeln!(self.out, "{}", msg).unwrap();
+        writeln!(&mut self.out, "").unwrap();
     }
 
     pub fn print_help(&mut self) {
         writeln!(&mut self.out, "{}", HELP).unwrap();
+        writeln!(&mut self.out, "").unwrap();
     }
 
     /// Prints a table list to stdout.
@@ -146,8 +149,9 @@ impl Terminal {
         self.print_table(&[&names, &types, &nullables, &encodings, &compressions]);
     }
 
-    fn print_table(&mut self, columns: &[&[String]]) {
+    pub fn print_table<C>(&mut self, columns: &[C]) where C: AsRef<[String]> {
         let rows = columns.iter().fold(None, |prev, col| {
+            let col = col.as_ref();
             let rows = col.len();
             if let Some(prev_rows) = prev {
                 assert_eq!(prev_rows, rows);
@@ -155,15 +159,17 @@ impl Terminal {
             Some(rows)
         }).expect("there must be at least a header");
         let widths = columns.iter()
-                            .map(|col| col.iter().map(|cell| cell.len()).max().unwrap_or(0))
+                            .map(|col| col.as_ref().iter().map(|cell| cell.len()).max().unwrap_or(0))
                             .collect::<Vec<_>>();
 
         for row in 0..rows {
             for col in 0..columns.len() {
                 if col == 0 {
-                    write!(&mut self.out, " {:<1$} ", columns[col][row], widths[col]).unwrap();
+                    write!(&mut self.out, "{:<1$} ", columns[col].as_ref()[row], widths[col]).unwrap();
+                } else if col == columns.len() - 1 {
+                    write!(&mut self.out, "| {:<1$}", columns[col].as_ref()[row], widths[col]).unwrap();
                 } else {
-                    write!(&mut self.out, "| {:<1$} ", columns[col][row], widths[col]).unwrap();
+                    write!(&mut self.out, "| {:<1$} ", columns[col].as_ref()[row], widths[col]).unwrap();
                 }
             }
             writeln!(&mut self.out, "").unwrap();
@@ -171,7 +177,7 @@ impl Terminal {
             if row == 0 {
                 for col in 0..columns.len() {
                     if col == 0 {
-                        write!(&mut self.out, " {:-<1$}", "", widths[col]).unwrap();
+                        write!(&mut self.out, "{:-<1$}", "", widths[col]).unwrap();
                     } else {
                         write!(&mut self.out, "-+-{:-<1$}", "", widths[col]).unwrap();
                     }
@@ -179,5 +185,6 @@ impl Terminal {
                 writeln!(&mut self.out, "").unwrap();
             }
         }
+        writeln!(&mut self.out, "").unwrap();
     }
 }

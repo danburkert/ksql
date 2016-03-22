@@ -22,6 +22,8 @@ mod command;
 mod parser;
 mod terminal;
 
+use std::time::Duration;
+
 use docopt::Docopt;
 
 use parser::{
@@ -38,6 +40,28 @@ Commands:
 
     DESCRIBE TABLE <table>;
         Print a description of the table.
+
+    DROP TABLE <table>;
+        Delete the table.
+
+    CREATE TABLE <table> (<col> <data-type> [NULLABLE | NOT NULL] [ENCODING <encoding>]
+                                            [COMPRESSION <compression>] [BLOCK SIZE <block-size>], ..)
+    PRIMARY KEY (<col>, ..)
+    [DISTRIBUTE BY [RANGE (<col>, ..) [SPLIT ROWS (<col-val>, ..)[, (<col-val>, ..)..]]]
+                   [HASH (<col>, ..) [WITH SEED <seed>] INTO <buckets> BUCKETS]..
+    WITH <replicas> REPLICAS;
+        Create a table with the specified columns and options.
+
+    INSERT INTO <table> [(<col>, ..)] VALUES (<col-val>, ..), ..;
+        Insert one or more rows into the table. The column order may optionally
+        be specified.
+
+    SELECT * FROM <table>;
+    SELECT <col>,.. FROM <table>;
+        Select all or some columns from a table.
+
+    SELECT COUNT(*) FROM <table>;
+        Count the total number of rows in the table.
 ";
 
 static USAGE: &'static str = "
@@ -80,6 +104,7 @@ fn main() {
         let mut builder = kudu::ClientBuilder::new();
         for addr in &args.flag_master {
             builder.add_master_server_addr(addr);
+            builder.set_default_admin_operation_timeout(&Duration::from_secs(60));
         }
         builder.build().unwrap()
     };
@@ -87,37 +112,38 @@ fn main() {
     linenoise::set_callback(callback);
     linenoise::set_multiline(1);
 
+    let mut input: Option<String> = None;
     loop {
-      let val = linenoise::input("kudu> ");
-        match val {
+        match input {
+            Some(ref mut input) => match linenoise::input("") {
+                Some(ref line) => {
+                    input.push(' ');
+                    input.push_str(&line)
+                },
+                None => break,
+            },
+            None => input = linenoise::input("kudu> "),
+        }
+        match input {
             None => { break }
             Some(ref input) => {
-                linenoise::history_add(&input);
-                match Commands1.parse(input) {
+                match Commands1.parse(&input) {
                     ParseResult::Ok(commands, remaining) => {
+                        linenoise::history_add(&input);
                         assert!(remaining.is_empty());
                         for command in commands {
                             command.execute(&mut client, &mut term);
                         }
                     },
                     ParseResult::Err(hints, remaining) => {
-                        term.print_parse_error(input, remaining, &hints);
+                        linenoise::history_add(&input);
+                        term.print_parse_error(&input, remaining, &hints);
                     },
-                    ParseResult::Incomplete(hints) => {
-                        // Find the hint that made the most progress, and use it
-                        // as the error.
-                        let &(_, remaining) = hints.iter()
-                                                   .min_by_key(|&&(_, remaining)| remaining.len())
-                                                   .unwrap();
-                        let hints = hints.into_iter()
-                                         .filter(|&(_, ref r)| remaining.len() == r.len())
-                                         .map(|t| t.0)
-                                         .collect::<Vec<_>>();
-                        term.print_parse_error(input, remaining, &hints);
-                    },
+                    _ => continue,
                 }
             },
         }
+        input = None;
     }
 }
 
