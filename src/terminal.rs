@@ -113,18 +113,6 @@ impl Terminal {
         writeln!(&mut self.out, "").unwrap();
     }
 
-    /// Prints a table list to stdout.
-    pub fn print_table_list(&mut self, tables: &[String]) {
-        let width = cmp::max(5, tables.iter().map(|name| name.len()).max().unwrap_or(0));
-
-        writeln!(&mut self.out, "{:<1$}", "Table", width).unwrap();
-        writeln!(&mut self.out, "{:-^1$}", "", width).unwrap();
-        for table in tables {
-            writeln!(&mut self.out, "{:<1$}", table, width).unwrap();
-        }
-        writeln!(&mut self.out, "").unwrap();
-    }
-
     /// Prints a table description to stdout.
     pub fn print_table_description(&mut self, schema: &kudu::Schema) {
         let columns = (0..schema.columns().len()).map(|idx| schema.column(idx).unwrap()).collect::<Vec<_>>();

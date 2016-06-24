@@ -65,12 +65,20 @@ impl <'a> Command<'a> {
             Command::Noop => (),
             Command::Help => term.print_help(),
             Command::ShowTables => {
-                /*
-                match client.list_tables("") {
-                    Ok(tables) => term.print_table_list(&tables),
+                match client.list_tables(Instant::now() + Duration::from_secs(10)) {
+                    Ok(tables) => {
+                        let mut names = Vec::with_capacity(tables.len());
+                        let mut ids = Vec::with_capacity(tables.len());
+                        names.push("Table".to_string());
+                        ids.push("ID".to_string());
+                        for (table, id) in tables {
+                            names.push(table);
+                            ids.push(id.to_string());
+                        }
+                        term.print_table(&[names, ids])
+                    },
                     Err(error) => term.print_kudu_error(&error),
                 }
-                */
                 term.print_not_implemented()
             },
             Command::DescribeTable { table } => {
@@ -83,13 +91,10 @@ impl <'a> Command<'a> {
                 term.print_not_implemented()
             },
             Command::DropTable { table } => {
-                /*
-                match client.delete_table_by_name(table, Instant::now() + Duration::from_secs(10)) {
+                match client.delete_table(table, Instant::now() + Duration::from_secs(10)) {
                     Ok(_) => term.print_success("table dropped"),
                     Err(error) => term.print_kudu_error(&error),
                 }
-                */
-                term.print_not_implemented()
             },
             Command::Select { table, selector } => {
                 /*
