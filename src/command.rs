@@ -79,16 +79,12 @@ impl <'a> Command<'a> {
                     },
                     Err(error) => term.print_kudu_error(&error),
                 }
-                term.print_not_implemented()
             },
             Command::DescribeTable { table } => {
-                /*
-                match client.get_table_schema(table) {
+                match client.get_table_schema(table, Instant::now() + Duration::from_secs(10)) {
                     Ok(schema) => term.print_table_description(&schema),
                     Err(error) => term.print_kudu_error(&error),
                 }
-                */
-                term.print_not_implemented()
             },
             Command::DropTable { table } => {
                 match client.delete_table(table, Instant::now() + Duration::from_secs(10)) {
