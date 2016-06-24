@@ -9,7 +9,7 @@ keywords = ["kudu", "database"]
 [dependencies]
 chrono = "0.2"
 docopt = "0.6"
-kudu = { path = "../kudu-rs" }
+kudu = { git = "https://github.com/danburkert/kudu-rs" }
 libc = "0.2"
 linenoise-rust = "0.1"
 rustc-serialize = "0.3"

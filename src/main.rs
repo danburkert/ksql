@@ -22,6 +22,8 @@ mod command;
 mod parser;
 mod terminal;
 
+use std::net::SocketAddr;
+use std::str::FromStr;
 use std::time::Duration;
 
 use docopt::Docopt;
@@ -101,12 +103,9 @@ fn main() {
     let mut term = terminal::Terminal::new(args.flag_color);
 
     let mut client = {
-        let mut builder = kudu::ClientBuilder::new();
-        for addr in &args.flag_master {
-            builder.add_master_server_addr(addr);
-            builder.set_default_admin_operation_timeout(&Duration::from_secs(60));
-        }
-        builder.build().unwrap()
+        let mut config = kudu::ClientConfig::new(args.flag_master.iter().map(|master| SocketAddr::from_str(master).unwrap()).collect::<Vec<_>>());
+        config.set_default_admin_operation_timeout(Duration::from_secs(60));
+        kudu::Client::new(config)
     };
 
     linenoise::set_callback(callback);

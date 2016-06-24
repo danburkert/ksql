@@ -950,7 +950,7 @@ impl <'a> Parser<'a> for EncodingType {
     type Output = kudu::EncodingType;
     fn parse(&self, input: &'a str) -> ParseResult<'a, kudu::EncodingType> {
         Keyword("ENCODING").and_then(Chomp1)
-                       .and_then(Keyword("DEFAULT").map(|_| kudu::EncodingType::Default)
+                       .and_then(Keyword("AUTO").map(|_| kudu::EncodingType::Auto)
                         .or_else(Keyword("PLAIN").map(|_| kudu::EncodingType::Plain))
                         .or_else(Keyword("PREFIX").map(|_| kudu::EncodingType::Prefix))
                         .or_else(Keyword("GROUPVARINT").map(|_| kudu::EncodingType::GroupVarint))
@@ -1083,7 +1083,9 @@ impl <'a> Parser<'a> for HashPartition {
         let (seed, remaining) = try_parse!(OptionalClause(Keyword("WITH").and_then(Chomp1)
                                                                          .and_then(Keyword("SEED"))
                                                                          .and_then(Chomp1)
-                                                                         .and_then(I32)).parse(remaining));
+                                                                         .and_then(PosIntLiteral)
+                                                                         // TODO: checked cast
+                                                                         .map(|seed| seed as u32)).parse(remaining));
 
         let (buckets, remaining) = try_parse!(Chomp1.and_then(Keyword("INTO"))
                                                     .and_then(Chomp1)

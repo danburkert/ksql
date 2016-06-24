@@ -99,7 +99,7 @@ impl Terminal {
         self.red();
         write!(self.err, "error: ").unwrap();
         self.reset();
-        writeln!(self.err, "{}", error.message()).unwrap();
+        writeln!(self.err, "{}", error).unwrap();
         writeln!(&mut self.out, "").unwrap();
     }
 
@@ -127,7 +127,7 @@ impl Terminal {
 
     /// Prints a table description to stdout.
     pub fn print_table_description(&mut self, schema: &kudu::Schema) {
-        let columns = (0..schema.num_columns()).map(|idx| schema.column(idx)).collect::<Vec<_>>();
+        let columns = (0..schema.columns().len()).map(|idx| schema.column(idx).unwrap()).collect::<Vec<_>>();
 
         let mut names = vec!["Column".to_owned()];
         names.extend(columns.iter().map(|col| col.name().to_owned()));
@@ -141,10 +141,10 @@ impl Terminal {
         }));
 
         let mut encodings = vec!["Encoding".to_owned()];
-        encodings.extend(columns.iter().map(|col| format!("{:?}", col.encoding_type())));
+        encodings.extend(columns.iter().map(|col| format!("{:?}", col.encoding())));
 
         let mut compressions = vec!["Compression".to_owned()];
-        compressions.extend(columns.iter().map(|col| format!("{:?}", col.compression_type())));
+        compressions.extend(columns.iter().map(|col| format!("{:?}", col.compression())));
 
         self.print_table(&[&names, &types, &nullables, &encodings, &compressions]);
     }
@@ -186,5 +186,9 @@ impl Terminal {
             }
         }
         writeln!(&mut self.out, "").unwrap();
+    }
+
+    pub fn print_not_implemented(&mut self) {
+        writeln!(&mut self.out, "not yet implemented!").unwrap();
     }
 }
