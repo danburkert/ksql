@@ -174,7 +174,7 @@ fn create_table<'a>(client: &mut kudu::Client,
 
         for range_split in &range_partition.split_rows {
             let mut row = schema.new_row();
-            populate_row(&mut row, &columns, range_split);
+            try!(populate_row(&mut row, &columns, range_split));
             table_builder.add_range_split(row);
         }
     }

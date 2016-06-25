@@ -22,7 +22,7 @@ mod command;
 mod parser;
 mod terminal;
 
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr, ToSocketAddrs};
 use std::str::FromStr;
 use std::time::Duration;
 
@@ -103,7 +103,7 @@ fn main() {
     let mut term = terminal::Terminal::new(args.flag_color);
 
     let mut client = {
-        let mut config = kudu::ClientConfig::new(args.flag_master.iter().map(|master| SocketAddr::from_str(master).unwrap()).collect::<Vec<_>>());
+        let mut config = kudu::ClientConfig::new(args.flag_master.iter().map(|master| resolve_master(master)).collect::<Vec<_>>());
         config.set_default_admin_operation_timeout(Duration::from_secs(60));
         kudu::Client::new(config)
     };
@@ -144,6 +144,28 @@ fn main() {
         }
         input = None;
     }
+}
+
+/// Attempts to resolve a string into a master address. Panic on failure.
+fn resolve_master(input: &str) -> SocketAddr {
+    if let Ok(addr) = SocketAddr::from_str(input) {
+        return addr;
+    }
+    if let Ok(ip) = IpAddr::from_str(input) {
+        return SocketAddr::new(ip, 7051);
+    }
+    if let Ok(mut results) = input.to_socket_addrs() {
+        if let Some(addr) = results.next() {
+            return addr;
+        }
+    }
+    if let Ok(mut results) = (input, 7051).to_socket_addrs() {
+        if let Some(addr) = results.next() {
+            return addr;
+        }
+    }
+
+    panic!("Unable to resolve master address '{}'", input);
 }
 
 fn callback(input: &str) -> Vec<String> {
