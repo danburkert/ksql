@@ -53,7 +53,9 @@ Commands:
                    [HASH (<col>, ..) [WITH SEED <seed>] INTO <buckets> BUCKETS]..
     WITH <replicas> REPLICAS;
         Create a table with the specified columns and options.
+";
 
+/*
     INSERT INTO <table> [(<col>, ..)] VALUES (<col-val>, ..), ..;
         Insert one or more rows into the table. The column order may optionally
         be specified.
@@ -64,7 +66,7 @@ Commands:
 
     SELECT COUNT(*) FROM <table>;
         Count the total number of rows in the table.
-";
+*/
 
 static USAGE: &'static str = "
 Usage:
