@@ -81,8 +81,8 @@ impl <'a> Command<'a> {
                 }
             },
             Command::DescribeTable { table } => {
-                match client.get_table_schema(table, Instant::now() + Duration::from_secs(10)) {
-                    Ok(schema) => term.print_table_description(&schema),
+                match client.open_table(table, Instant::now() + Duration::from_secs(10)) {
+                    Ok(table) => term.print_table_description(table.schema()),
                     Err(error) => term.print_kudu_error(&error),
                 }
             },
