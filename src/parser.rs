@@ -831,6 +831,10 @@ impl <'a> Parser<'a> for Command {
     type Output = command::Command<'a>;
     fn parse(&self, input: &'a str) -> ParseResult<'a, command::Command<'a>> {
         let commands = Help.or_else(ShowTables)
+                           .or_else(ShowMasters)
+                           .or_else(ShowTabletServers)
+                           .or_else(ShowTableTablets)
+                           .or_else(ShowTableReplicas)
                            .or_else(DescribeTable)
                            .or_else(Select)
                            .or_else(Insert)
@@ -892,6 +896,80 @@ impl <'a> Parser<'a> for ShowTables {
             .and_then(Chomp0)
             .and_then(Char(';', ";"))
             .map(|_| command::Command::ShowTables)
+            .parse(input)
+    }
+}
+
+/// Parses a SHOW MASTERS statement.
+struct ShowMasters;
+impl <'a> Parser<'a> for ShowMasters {
+    type Output = command::Command<'a>;
+    fn parse(&self, input: &'a str) -> ParseResult<'a, command::Command<'a>> {
+        Keyword("SHOW")
+            .and_then(Chomp1)
+            .and_then(Keyword("MASTERS"))
+            .and_then(Chomp0)
+            .and_then(Char(';', ";"))
+            .map(|_| command::Command::ShowMasters)
+            .parse(input)
+    }
+}
+
+/// Parses a SHOW TABLET SERVERS statement.
+struct ShowTabletServers;
+impl <'a> Parser<'a> for ShowTabletServers {
+    type Output = command::Command<'a>;
+    fn parse(&self, input: &'a str) -> ParseResult<'a, command::Command<'a>> {
+        Keyword("SHOW")
+            .and_then(Chomp1)
+            .and_then(Keyword("TABLET"))
+            .and_then(Chomp1)
+            .and_then(Keyword("SERVERS"))
+            .and_then(Chomp0)
+            .and_then(Char(';', ";"))
+            .map(|_| command::Command::ShowTabletServers)
+            .parse(input)
+    }
+}
+
+/// Parses a SHOW TABLETS FOR TABLE statement.
+struct ShowTableTablets;
+impl <'a> Parser<'a> for ShowTableTablets {
+    type Output = command::Command<'a>;
+    fn parse(&self, input: &'a str) -> ParseResult<'a, command::Command<'a>> {
+        Keyword("SHOW")
+            .and_then(Chomp1)
+            .and_then(Keyword("TABLETS"))
+            .and_then(Chomp1)
+            .and_then(Keyword("OF"))
+            .and_then(Chomp1)
+            .and_then(Keyword("TABLE"))
+            .and_then(Chomp1)
+            .and_then(TableName).map(|table| command::Command::ShowTableTablets { table: table })
+            .followed_by(Chomp0)
+            .followed_by(Char(';', ";"))
+            .parse(input)
+    }
+}
+
+/// Parses a SHOW TABLET REPLICAS FOR TABLE statement.
+struct ShowTableReplicas;
+impl <'a> Parser<'a> for ShowTableReplicas {
+    type Output = command::Command<'a>;
+    fn parse(&self, input: &'a str) -> ParseResult<'a, command::Command<'a>> {
+        Keyword("SHOW")
+            .and_then(Chomp1)
+            .and_then(Keyword("TABLET"))
+            .and_then(Chomp1)
+            .and_then(Keyword("REPLICAS"))
+            .and_then(Chomp1)
+            .and_then(Keyword("OF"))
+            .and_then(Chomp1)
+            .and_then(Keyword("TABLE"))
+            .and_then(Chomp1)
+            .and_then(TableName).map(|table| command::Command::ShowTableReplicas { table: table })
+            .followed_by(Chomp0)
+            .followed_by(Char(';', ";"))
             .parse(input)
     }
 }
@@ -1296,13 +1374,15 @@ mod test {
         LineComment,
         Literal,
         Noop,
-        Parser,
         ParseResult,
+        Parser,
         PosIntLiteral,
         RangePartition,
         Row,
         Select,
+        ShowMasters,
         ShowTables,
+        ShowTabletServers,
         TimestampLiteral,
         TokenDelimiter,
     };
@@ -1415,6 +1495,35 @@ SELECT";
 
         assert_eq!(parser.parse("SHOW--mycoment ; foo bar\nTABLES;"),
                    ParseResult::Ok(command::Command::ShowTables, ""));
+
+    }
+
+    #[test]
+    fn test_show_masters() {
+        let parser = ShowTables;
+        assert_eq!(parser.parse("SHOW MASTERS ;"),
+                   ParseResult::Ok(command::Command::ShowTables, ""));
+        assert_eq!(parser.parse("shOw MASTERS;"),
+                   ParseResult::Ok(command::Command::ShowTables, ""));
+        assert_eq!(parser.parse("shOw \t\r\nMASTERS;next command"),
+                   ParseResult::Ok(command::Command::ShowTables, "next command"));
+
+        assert_eq!(parser.parse("SHOW--mycoment ; foo bar\nMASTERS;"),
+                   ParseResult::Ok(command::Command::ShowTables, ""));
+    }
+
+    #[test]
+    fn test_show_tablet_servers() {
+        let parser = ShowTabletServers;
+        assert_eq!(parser.parse("SHOW TABLET SERVERS ;"),
+                   ParseResult::Ok(command::Command::ShowTabletServers, ""));
+        assert_eq!(parser.parse("shOw TABLET SERVERS;"),
+                   ParseResult::Ok(command::Command::ShowTabletServers, ""));
+        assert_eq!(parser.parse("shOw \t\r\nTABLET\t\r\nSERVERS;next command"),
+                   ParseResult::Ok(command::Command::ShowTabletServers, "next command"));
+
+        assert_eq!(parser.parse("SHOW--mycoment ; foo bar\nTABLET SERVERS;"),
+                   ParseResult::Ok(command::Command::ShowTabletServers, ""));
     }
 
     #[test]

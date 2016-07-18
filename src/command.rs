@@ -2,7 +2,6 @@ use std::borrow::Cow;
 use std::time::{
     Duration,
     Instant,
-    SystemTime,
     UNIX_EPOCH
 };
 
@@ -23,6 +22,27 @@ pub enum Command<'a> {
     /// SHOW TABLES;
     ShowTables,
 
+    /// SHOW CREATE TABLE <table>;
+    ShowCreateTable {
+        table: &'a str,
+    },
+
+    /// SHOW MASTERS;
+    ShowMasters,
+
+    /// SHOW TABLET SERVERS;
+    ShowTabletServers,
+
+    /// SHOW TABLETS OF TABLE <table>;
+    ShowTableTablets {
+        table: &'a str,
+    },
+
+    /// SHOW TABLET REPLICAS OF TABLE <table>;
+    ShowTableReplicas {
+        table: &'a str,
+    },
+
     /// DESCRIBE TABLE <table>;
     DescribeTable {
         table: &'a str,
@@ -33,12 +53,16 @@ pub enum Command<'a> {
         table: &'a str,
     },
 
+    /// INSERT INTO <table> [(<col>, ..)] VALUES (<col-val>, ..), ..;
     Insert {
         table: &'a str,
         columns: Option<Vec<&'a str>>,
         rows: Vec<Vec<Literal<'a>>>,
     },
 
+    /// SELECT * FROM <table>;
+    /// SELECT <col>,.. FROM <table>;
+    /// SELECT COUNT(*) FROM <table>;
     Select {
         table: &'a str,
         selector: Selector<'a>,
@@ -58,41 +82,68 @@ pub enum Command<'a> {
     }
 }
 
+fn deadline() -> Instant {
+    Instant::now() + Duration::from_secs(60)
+}
+
 impl <'a> Command<'a> {
 
-    pub fn execute(self, client: &mut kudu::Client, term: &mut Terminal) {
+    pub fn execute(self, client: &kudu::Client, term: &mut Terminal) {
         match self {
             Command::Noop => (),
             Command::Help => term.print_help(),
-            Command::ShowTables => {
-                match client.list_tables(Instant::now() + Duration::from_secs(10)) {
-                    Ok(tables) => {
-                        let mut names = Vec::with_capacity(tables.len());
-                        let mut ids = Vec::with_capacity(tables.len());
-                        names.push("Table".to_string());
-                        ids.push("ID".to_string());
-                        for (table, id) in tables {
-                            names.push(table);
-                            ids.push(id.to_string());
-                        }
-                        term.print_table(&[names, ids])
-                    },
+            Command::ShowTables => match client.list_tables(deadline()) {
+                Ok(tables) => {
+                    let mut names = Vec::with_capacity(tables.len());
+                    let mut ids = Vec::with_capacity(tables.len());
+                    names.push("Table".to_string());
+                    ids.push("ID".to_string());
+                    for (table, id) in tables {
+                        names.push(table);
+                        ids.push(id.to_string());
+                    }
+                    term.print_table(&[names, ids])
+                },
+                Err(error) => term.print_kudu_error(&error),
+            },
+            Command::ShowCreateTable { table } => {
+
+            },
+            Command::ShowMasters => match client.list_masters(deadline()) {
+                Ok(masters) => term.print_masters(masters),
+                Err(error) => term.print_kudu_error(&error),
+            },
+            Command::ShowTabletServers => match client.list_tablet_servers(deadline()) {
+                Ok(tablet_servers) => term.print_tablet_servers(tablet_servers),
+                Err(error) => term.print_kudu_error(&error),
+            },
+            Command::ShowTableTablets { table } => {
+                let deadline = deadline();
+                match client.open_table(table, deadline)
+                            .and_then(|table| table.list_tablets(deadline)) {
+                    Ok(tablets) => term.print_tablets(tablets),
                     Err(error) => term.print_kudu_error(&error),
                 }
             },
-            Command::DescribeTable { table } => {
-                match client.open_table(table, Instant::now() + Duration::from_secs(10)) {
-                    Ok(table) => term.print_table_description(table.schema()),
+            Command::ShowTableReplicas { table } => {
+                let deadline = deadline();
+                match client.open_table(table, deadline)
+                            .and_then(|table| table.list_tablets(deadline)) {
+                    Ok(tablets) => term.print_replicas(tablets),
                     Err(error) => term.print_kudu_error(&error),
                 }
+            },
+            Command::DescribeTable { table } => match client.open_table(table, deadline()) {
+                Ok(table) => term.print_table_description(table.schema()),
+                Err(error) => term.print_kudu_error(&error),
             },
             Command::DropTable { table } => {
-                match client.delete_table(table, Instant::now() + Duration::from_secs(10)) {
+                match client.delete_table(table, deadline()) {
                     Ok(_) => term.print_success("table dropped"),
                     Err(error) => term.print_kudu_error(&error),
                 }
             },
-            Command::Select { table, selector } => {
+            Command::Select { .. /*table, selector*/ } => {
                 /*
                 match select(client, table, selector) {
                     Ok(table) => term.print_table(&table[..]),
@@ -101,7 +152,7 @@ impl <'a> Command<'a> {
                 */
                 term.print_not_implemented()
             },
-            Command::Insert { table, columns, rows } => {
+            Command::Insert { .. /*table, columns, rows*/ } => {
                 /*
                 let count = rows.len();
                 match insert(client, table, columns, rows) {
@@ -121,7 +172,7 @@ impl <'a> Command<'a> {
     }
 }
 
-fn create_table<'a>(client: &mut kudu::Client,
+fn create_table<'a>(client: &kudu::Client,
                     name: &str,
                     columns: Vec<CreateColumn>,
                     primary_key: Vec<&str>,
@@ -189,11 +240,11 @@ fn create_table<'a>(client: &mut kudu::Client,
         table_builder.set_num_replicas(replicas);
     }
 
-    client.create_table(table_builder, Instant::now() + Duration::from_secs(10)).map(|_| ())
+    client.create_table(table_builder, deadline()).map(|_| ())
 }
 
 /*
-fn select(client: &mut kudu::Client,
+fn select(client: &kudu::Client,
           table: &str,
           selector: Selector)
           -> kudu::Result<Vec<Vec<String>>> {
@@ -234,7 +285,7 @@ fn to_date_time(timestamp: &SystemTime) -> chrono::DateTime<chrono::UTC> {
     chrono::DateTime::from_utc(naive, chrono::UTC)
 }
 
-fn scan(client: &mut kudu::Client,
+fn scan(client: &kudu::Client,
         table: &str,
         columns: Option<Vec<&str>>)
         -> kudu::Result<Vec<Vec<String>>> {
@@ -288,7 +339,7 @@ fn scan(client: &mut kudu::Client,
     Ok(vec![vec!["not yet implemented"]])
 }
 
-fn count(client: &mut kudu::Client, table: &str) -> kudu::Result<Vec<Vec<String>>> {
+fn count(client: &kudu::Client, table: &str) -> kudu::Result<Vec<Vec<String>>> {
     let table = try!(client.open_table(table));
     let mut scanner = {
         let mut builder = kudu::ScanBuilder::new(&table);
@@ -305,7 +356,7 @@ fn count(client: &mut kudu::Client, table: &str) -> kudu::Result<Vec<Vec<String>
     Ok(vec![vec!["COUNT(*)".to_string(), count.to_string()]])
 }
 
-fn insert(client: &mut kudu::Client,
+fn insert(client: &kudu::Client,
           table: &str,
           columns: Option<Vec<&str>>,
           rows: Vec<Vec<Literal>>)
@@ -343,7 +394,6 @@ fn insert(client: &mut kudu::Client,
     try!(session.flush());
     session.close()
 }
-
 */
 
 /// Sets the columns in the partial row to the provided literal values.
@@ -368,9 +418,7 @@ fn populate_row<'a>(row: &mut kudu::Row,
                     let value = value as u64;
                     UNIX_EPOCH + Duration::new(value / 1000_000, (value % 1000_000) as u32 * 1000)
                 };
-                // TODO: switch back to SystemTime
-                //try!(row.set(column_idx, time))
-                try!(row.set(column_idx, value))
+                try!(row.set(column_idx, time))
             },
             (kudu::DataType::Float, &Literal::Float(f)) => try!(row.set(column_idx, f as f32)),
             (_, &Literal::Float(f)) => try!(row.set(column_idx, f)),
@@ -383,6 +431,7 @@ fn populate_row<'a>(row: &mut kudu::Row,
     Ok(())
 }
 
+/*
 fn build_rows(schema: &kudu::Schema,
               columns: &[(usize, kudu::DataType)],
               literal_rows: &[Vec<Literal>])
@@ -395,6 +444,7 @@ fn build_rows(schema: &kudu::Schema,
     };
     Ok(rows)
 }
+*/
 
 #[derive(Debug, PartialEq, Eq)]
 pub struct CreateColumn<'a> {

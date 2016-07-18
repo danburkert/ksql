@@ -24,7 +24,6 @@ mod terminal;
 
 use std::net::{IpAddr, SocketAddr, ToSocketAddrs};
 use std::str::FromStr;
-use std::time::Duration;
 
 use docopt::Docopt;
 
@@ -40,17 +39,34 @@ Commands:
     SHOW TABLES;
         List the name of all Kudu tables.
 
+    SHOW CREATE TABLE <table>;
+        Prints the CREATE TABLE statement for the table.
+
+    SHOW MASTERS;
+        List the master servers in the Kudu cluster.
+
+    SHOW TABLET SERVERS;
+        List the tablet servers in the Kudu cluster.
+
+    SHOW TABLETS OF TABLE <table>;
+        List the tablets belonging to a table.
+
+    SHOW TABLET REPLICAS OF TABLE <table>;
+        List the tablet replicas belonging to a table.
+
     DESCRIBE TABLE <table>;
-        Print a description of the table.
+        List the columns of a table.
 
     DROP TABLE <table>;
         Delete the table.
 
-    CREATE TABLE <table> (<col> <data-type> [NULLABLE | NOT NULL] [ENCODING <encoding>]
-                                            [COMPRESSION <compression>] [BLOCK SIZE <block-size>], ..)
+    CREATE TABLE <table> (<col> <data-type> [NULLABLE | NOT NULL]
+                                            [ENCODING <encoding>]
+                                            [COMPRESSION <compression>]
+                                            [BLOCK SIZE <block-size>], ..)
     PRIMARY KEY (<col>, ..)
-    [DISTRIBUTE BY [RANGE (<col>, ..) [SPLIT ROWS (<col-val>, ..)[, (<col-val>, ..)..]]]
-                   [HASH (<col>, ..) [WITH SEED <seed>] INTO <buckets> BUCKETS]..
+    DISTRIBUTE BY [RANGE (<col>, ..) [SPLIT ROWS (<col-val>, ..)[, (<col-val>, ..)..]]]
+                  [HASH (<col>, ..) [WITH SEED <seed>] INTO <buckets> BUCKETS]..
     WITH <replicas> REPLICAS;
         Create a table with the specified columns and options.
 ";
@@ -104,9 +120,9 @@ fn main() {
 
     let mut term = terminal::Terminal::new(args.flag_color);
 
-    let mut client = {
-        let mut config = kudu::ClientConfig::new(args.flag_master.iter().map(|master| resolve_master(master)).collect::<Vec<_>>());
-        config.set_default_admin_operation_timeout(Duration::from_secs(60));
+    let client = {
+        let master_addrs = args.flag_master.iter().map(|master| resolve_master(master)).collect();
+        let config = kudu::ClientConfig::new(master_addrs);
         kudu::Client::new(config)
     };
 
@@ -133,7 +149,7 @@ fn main() {
                         linenoise::history_add(&input);
                         assert!(remaining.is_empty());
                         for command in commands {
-                            command.execute(&mut client, &mut term);
+                            command.execute(&client, &mut term);
                         }
                     },
                     ParseResult::Err(hints, remaining) => {

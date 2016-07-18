@@ -1,4 +1,5 @@
 use std::io::Write;
+use std::time::Duration;
 
 use kudu;
 use libc;
@@ -12,6 +13,53 @@ pub struct Terminal {
     out: Box<term::StdoutTerminal>,
     err: Box<term::StderrTerminal>,
     color: bool,
+}
+
+fn host_ports_to_string(host_ports: &[(String, u16)]) -> String {
+    let mut s = String::new();
+    let mut is_first = true;
+    for host_port in host_ports {
+        if is_first { is_first = false; }
+        else { s.push(',') };
+        s.push_str(&host_port.0);
+        s.push(':');
+        s.push_str(&host_port.1.to_string());
+    }
+
+    s
+}
+
+fn format(n: u64, n_per_unit: u64, unit: &str) -> String {
+    if n % n_per_unit == 0 {
+        format!("{}{}", n / n_per_unit, unit)
+    } else {
+        format!("{:.2}{}", n as f64 / n_per_unit as f64, unit)
+    }
+}
+
+fn duration_to_string(duration: Duration) -> String {
+    let s = duration.as_secs();
+    let ns = duration.subsec_nanos() as u64;
+
+    const NANOS_PER_MICRO: u64 = 1_000;
+    const NANOS_PER_MILLI: u64 = 1_000_000;
+    const NANOS_PER_SEC: u64 = 1_000_000_000;
+    const SECS_PER_MINUTE: u64 = 60;
+    const SECS_PER_HOUR: u64 = 60 * 60;
+
+    if s >= SECS_PER_HOUR {
+        format(s, SECS_PER_HOUR, "h")
+    } else if s >= SECS_PER_MINUTE {
+        format(s, SECS_PER_MINUTE, "m")
+    } else if s >= 1 {
+        format(s * NANOS_PER_SEC + ns, NANOS_PER_SEC, "s")
+    } else if ns >= NANOS_PER_MILLI {
+        format(ns, NANOS_PER_MILLI, "ms")
+    } else if ns >= 1_000 {
+        format(ns, NANOS_PER_MICRO, "μs")
+    } else {
+        format!("{}ns", ns)
+    }
 }
 
 impl Terminal {
@@ -110,6 +158,90 @@ impl Terminal {
     pub fn print_help(&mut self) {
         writeln!(&mut self.out, "{}", HELP).unwrap();
         writeln!(&mut self.out, "").unwrap();
+    }
+
+    /// Prints the master servers.
+    pub fn print_masters(&mut self, masters: Vec<kudu::Master>) {
+        let mut ids = vec!["ID".to_owned()];
+        let mut rpc_addrs = vec!["RPC Addresses".to_owned()];
+        let mut http_addrs = vec!["HTTP Addresses".to_owned()];
+        let mut seqnos = vec!["Sequence Number".to_owned()];
+        let mut roles = vec!["Role".to_owned()];
+
+        for master in masters {
+            ids.push(master.id().to_string());
+            rpc_addrs.push(host_ports_to_string(master.rpc_addrs()));
+            http_addrs.push(host_ports_to_string(master.http_addrs()));
+            seqnos.push(master.seqno().to_string());
+            roles.push(format!("{:?}", master.role()));
+        }
+
+        self.print_table(&[&ids, &rpc_addrs, &http_addrs, &seqnos, &roles]);
+    }
+
+    /// Prints the tablet servers.
+    pub fn print_tablet_servers(&mut self, tablet_servers: Vec<kudu::TabletServer>) {
+        let mut ids = vec!["Tablet Server ID".to_owned()];
+        let mut rpc_addrs = vec!["RPC Addresses".to_owned()];
+        let mut http_addrs = vec!["HTTP Addresses".to_owned()];
+        let mut versions = vec!["Software Version".to_owned()];
+        let mut seqnos = vec!["Sequence Number".to_owned()];
+        let mut heartbeats = vec!["Last Heartbeat".to_owned()];
+
+        for tablet_server in tablet_servers {
+            ids.push(tablet_server.id().to_string());
+            rpc_addrs.push(host_ports_to_string(tablet_server.rpc_addrs()));
+            http_addrs.push(host_ports_to_string(tablet_server.http_addrs()));
+            versions.push(tablet_server.software_version().to_owned());
+            seqnos.push(tablet_server.seqno().to_string());
+            heartbeats.push(duration_to_string(tablet_server.duration_since_heartbeat()));
+        }
+
+        self.print_table(&[&ids, &rpc_addrs, &http_addrs, &versions, &seqnos, &heartbeats]);
+    }
+
+    /// Prints the tablets.
+    pub fn print_tablets(&mut self, tablets: Vec<kudu::Tablet>) {
+        let mut ids = vec!["Tablet ID".to_owned()];
+        let mut lower_bounds = vec!["Partition Lower Bound".to_owned()];
+        let mut upper_bounds = vec!["Partition Upper Bound".to_owned()];
+        let mut leader_ids = vec!["Leader Tablet Server ID".to_owned()];
+        let mut leader_rpc_addrs = vec!["Leader RPC Addresses".to_owned()];
+
+        for tablet in tablets {
+            ids.push(tablet.id().to_string());
+            lower_bounds.push(format!("{:?}", tablet.partition().lower_bound()));
+            upper_bounds.push(format!("{:?}", tablet.partition().upper_bound()));
+
+            let leader = tablet.replicas().iter().find(|tablet| tablet.role() == kudu::RaftRole::Leader);
+            leader_ids.push(leader.map(kudu::Replica::id)
+                                  .map(kudu::TabletServerId::to_string)
+                                  .unwrap_or(String::new()));
+            leader_rpc_addrs.push(leader.map(kudu::Replica::rpc_addrs)
+                                        .map(host_ports_to_string)
+                                        .unwrap_or(String::new()));
+        }
+
+        self.print_table(&[&ids, &lower_bounds, &upper_bounds, &leader_ids, &leader_rpc_addrs]);
+    }
+
+    /// Prints the replicas.
+    pub fn print_replicas(&mut self, tablets: Vec<kudu::Tablet>) {
+        let mut tablet_ids = vec!["Tablet ID".to_owned()];
+        let mut tablet_server_ids = vec!["Tablet Server ID".to_owned()];
+        let mut rpc_addrs = vec!["RPC Addresses".to_owned()];
+        let mut roles = vec!["Role".to_owned()];
+
+        for tablet in tablets {
+            for replica in tablet.replicas() {
+                tablet_ids.push(tablet.id().to_string());
+                tablet_server_ids.push(replica.id().to_string());
+                rpc_addrs.push(host_ports_to_string(replica.rpc_addrs()));
+                roles.push(format!("{:?}", replica.role()));
+            }
+        }
+
+        self.print_table(&[&tablet_ids, &tablet_server_ids, &rpc_addrs, &roles]);
     }
 
     /// Prints a table description to stdout.
