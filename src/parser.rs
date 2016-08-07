@@ -143,6 +143,35 @@ impl <'a, T, P> Parser<'a> for Many1<P> where P: Parser<'a, Output=T> {
 }
 
 /// Applies the parser at least once, with the provided delimiter.
+/// TODO: is this right?  I think the hints may be a little messed up?
+struct Delimited0<P, D>(P, D);
+impl <'a, T, P, D> Parser<'a> for Delimited0<P, D>
+where P: Parser<'a, Output=T>,
+      D: Parser<'a> {
+    type Output = Vec<T>;
+    fn parse(&self, input: &'a str) -> ParseResult<'a, Vec<T>> {
+        let mut output = Vec::new();
+        let mut remaining;
+        if let ParseResult::Ok(t, r) = self.0.parse(input) {
+            remaining = r;
+            output.push(t);
+        } else {
+            return ParseResult::Ok(output, input);
+        }
+
+        loop {
+            if let ParseResult::Ok(_, r) = self.1.parse(remaining) {
+                let (t, r) = try_parse!(self.0.parse(r));
+                remaining = r;
+                output.push(t);
+            } else {
+                return ParseResult::Ok(output, remaining)
+            }
+        }
+    }
+}
+
+/// Applies the parser at least once, with the provided delimiter.
 struct Delimited1<P, D>(P, D);
 impl <'a, T, P, D> Parser<'a> for Delimited1<P, D>
 where P: Parser<'a, Output=T>,
@@ -840,6 +869,7 @@ impl <'a> Parser<'a> for Command {
                            .or_else(Insert)
                            .or_else(CreateTable)
                            .or_else(DropTable)
+                           .or_else(AlterTable)
                            .or_else(Noop);
 
         Chomp0.and_then(commands)
@@ -1145,7 +1175,7 @@ impl <'a> Parser<'a> for RangePartition {
                                        .and_then(Char('(', "("))
                                        .and_then(Chomp0)
                                        .and_then(Delimited1(ColumnName, Chomp0.and_then(Char(',', ","))
-                                                                                               .and_then(Chomp0)))
+                                                                              .and_then(Chomp0)))
                                        .followed_by(Chomp0)
                                        .followed_by(Char(')', ")"))
                                        .parse(input));
@@ -1273,14 +1303,143 @@ impl <'a> Parser<'a> for CreateTable {
     }
 }
 
+struct RenameTable;
+impl <'a> Parser<'a> for RenameTable {
+    type Output = command::AlterTableStep<'a>;
+    fn parse(&self, input: &'a str) -> ParseResult<'a, command::AlterTableStep<'a>> {
+        Keyword("RENAME").and_then(Chomp1)
+                         .and_then(Keyword("TO"))
+                         .and_then(Chomp1)
+                         .and_then(TableName)
+                         .map(|table_name| command::AlterTableStep::RenameTable {
+                             table_name: table_name
+                         })
+                         .parse(input)
+    }
+}
+
+struct RenameColumn;
+impl <'a> Parser<'a> for RenameColumn {
+    type Output = command::AlterTableStep<'a>;
+    fn parse(&self, input: &'a str) -> ParseResult<'a, command::AlterTableStep<'a>> {
+        let (old_column_name, remaining) =
+            try_parse!(Keyword("RENAME").and_then(Chomp1)
+                                        .and_then(Keyword("COLUMN"))
+                                        .and_then(Chomp1)
+                                        .and_then(ColumnName)
+                                        .followed_by(Chomp1)
+                                        .followed_by(Keyword("TO"))
+                                        .followed_by(Chomp1)
+                                        .and_then(ColumnName)
+                                        .parse(input));
+        let (new_column_name, remaining) = try_parse!(ColumnName.parse(remaining));
+        ParseResult::Ok(command::AlterTableStep::RenameColumn {
+            old_column_name: old_column_name,
+            new_column_name: new_column_name,
+        }, remaining)
+    }
+}
+
+struct AddColumn;
+impl <'a> Parser<'a> for AddColumn {
+    type Output = command::AlterTableStep<'a>;
+    fn parse(&self, input: &'a str) -> ParseResult<'a, command::AlterTableStep<'a>> {
+        Keyword("ADD").and_then(Chomp1)
+                      .and_then(Keyword("COLUMN"))
+                      .and_then(Chomp1)
+                      .and_then(ColumnSpec)
+                      .map(|column| command::AlterTableStep::AddColumn { column: column })
+                      .parse(input)
+    }
+}
+
+struct DropColumn;
+impl <'a> Parser<'a> for DropColumn {
+    type Output = command::AlterTableStep<'a>;
+    fn parse(&self, input: &'a str) -> ParseResult<'a, command::AlterTableStep<'a>> {
+        Keyword("DROP").and_then(Chomp1)
+                       .and_then(Keyword("COLUMN"))
+                       .and_then(Chomp1)
+                       .and_then(ColumnName)
+                       .map(|column_name| command::AlterTableStep::DropColumn {
+                           column_name: column_name
+                       })
+                       .parse(input)
+    }
+}
+
+struct AddRangePartition;
+impl <'a> Parser<'a> for AddRangePartition {
+    type Output = command::AlterTableStep<'a>;
+    fn parse(&self, input: &'a str) -> ParseResult<'a, command::AlterTableStep<'a>> {
+        Keyword("ADD").and_then(Chomp1)
+                      .and_then(Keyword("RANGE"))
+                      .and_then(Chomp1)
+                      .and_then(Keyword("PARTITION"))
+                      .and_then(Chomp1)
+                      .and_then(RangeBound)
+                      .map(|(lower_bound, upper_bound)| command::AlterTableStep::AddRangePartition {
+                          lower_bound: lower_bound,
+                          upper_bound: upper_bound,
+                      })
+                      .parse(input)
+    }
+}
+
+struct DropRangePartition;
+impl <'a> Parser<'a> for DropRangePartition {
+    type Output = command::AlterTableStep<'a>;
+    fn parse(&self, input: &'a str) -> ParseResult<'a, command::AlterTableStep<'a>> {
+        Keyword("DROP").and_then(Chomp1)
+                       .and_then(Keyword("RANGE"))
+                       .and_then(Chomp1)
+                       .and_then(Keyword("PARTITION"))
+                       .and_then(Chomp1)
+                       .and_then(RangeBound)
+                       .map(|(lower_bound, upper_bound)| command::AlterTableStep::DropRangePartition {
+                           lower_bound: lower_bound,
+                           upper_bound: upper_bound,
+                       })
+                       .parse(input)
+    }
+}
+
+struct AlterTable;
+impl <'a> Parser<'a> for AlterTable {
+    type Output = command::Command<'a>;
+    fn parse(&self, input: &'a str) -> ParseResult<'a, command::Command<'a>> {
+        let (table_name, remaining) = try_parse!(
+            Keyword("ALTER").and_then(Chomp1)
+                             .and_then(Keyword("TABLE"))
+                             .and_then(Chomp1)
+                             .and_then(TableName)
+                             .followed_by(Chomp1)
+                             .parse(input));
+
+        let step = RenameTable.or_else(RenameColumn)
+                              .or_else(AddColumn)
+                              .or_else(DropColumn)
+                              .or_else(AddRangePartition)
+                              .or_else(DropRangePartition);
+
+        let (steps, remaining) = try_parse!(
+            Delimited1(step, Chomp0.and_then(Char(',', ",")).and_then(Chomp0)).parse(remaining));
+
+        ParseResult::Ok(command::Command::AlterTable {
+            table_name: table_name,
+            steps: steps,
+        }, remaining)
+    }
+}
+
 // Parses ("abc", 123, 4.56)
 struct Row;
 impl <'a> Parser<'a> for Row {
     type Output = Vec<command::Literal<'a>>;
     fn parse(&self, input: &'a str) -> ParseResult<'a, Vec<command::Literal<'a>>> {
         Char('(', "(").and_then(Chomp0)
-                      .and_then(Delimited1(Literal, Chomp0.and_then(Char(',', ","))
-                                                                           .and_then(Chomp0)))
+                      .and_then(Delimited0(Literal, Chomp0.and_then(Char(',', ","))
+                                                          .and_then(Chomp0)))
                       .followed_by(Chomp0)
                       .followed_by(Char(')', ")"))
                       .parse(input)

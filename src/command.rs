@@ -79,7 +79,12 @@ pub enum Command<'a> {
         range_partition: Option<RangePartition<'a>>,
         hash_partitions: Vec<HashPartition<'a>>,
         replicas: Option<i32>,
-    }
+    },
+
+    AlterTable {
+        table_name: &'a str,
+        steps: Vec<AlterTableStep<'a>>,
+    },
 }
 
 fn deadline() -> Instant {
@@ -107,7 +112,7 @@ impl <'a> Command<'a> {
                 Err(error) => term.print_kudu_error(&error),
             },
             Command::ShowCreateTable { table } => {
-
+                term.print_not_implemented()
             },
             Command::ShowMasters => match client.list_masters(deadline()) {
                 Ok(masters) => term.print_masters(masters),
@@ -168,6 +173,12 @@ impl <'a> Command<'a> {
                     Err(error) => term.print_kudu_error(&error),
                 }
             },
+            Command::AlterTable { table_name, steps } => {
+                match alter_table(client, table_name, steps) {
+                    Ok(_) => term.print_success("table altered"),
+                    Err(error) => term.print_kudu_error(&error),
+                }
+            },
         }
     }
 }
@@ -182,20 +193,7 @@ fn create_table<'a>(client: &kudu::Client,
                     -> kudu::Result<()> {
     let mut schema = kudu::SchemaBuilder::new();
     for column in columns {
-        let mut builder = kudu::Column::builder(column.name, column.data_type);
-        if let Some(false) = column.nullable {
-            builder.set_not_null_by_ref();
-        }
-        if let Some(encoding_type) = column.encoding_type {
-            builder.set_encoding_by_ref(encoding_type);
-        }
-        if let Some(compression_type) = column.compression_type {
-            builder.set_compression_by_ref(compression_type);
-        }
-        if let Some(block_size) = column.block_size {
-            builder.set_block_size_by_ref(block_size);
-        }
-        schema.add_column_by_ref(builder);
+        schema.add_column_by_ref(column.into_column());
     }
     schema.set_primary_key_by_ref(primary_key);
     let schema = try!(schema.build());
@@ -204,15 +202,6 @@ fn create_table<'a>(client: &kudu::Client,
 
     if let Some(range_partition) = range_partition {
         table_builder.set_range_partition_columns(range_partition.columns.clone());
-
-        // Find column by name in schema, then map into the index and type
-        let mut columns = Vec::with_capacity(range_partition.columns.len());
-        for column in &range_partition.columns {
-            let index = table_builder.schema().column_index(column).unwrap();
-            columns.push((index, table_builder.schema().column(index).unwrap().data_type()));
-        }
-
-        //let rows = try!(build_rows(&schema, &columns, &range_partition.split_rows));
 
         // Find column by name in schema, then map into the index and type
         let mut columns = Vec::with_capacity(range_partition.columns.len());
@@ -246,7 +235,58 @@ fn create_table<'a>(client: &kudu::Client,
         table_builder.set_num_replicas(replicas);
     }
 
-    client.create_table(table_builder, deadline()).map(|_| ())
+    let table_id = try!(client.create_table(table_builder, deadline()));
+    client.wait_for_table_creation_by_id(&table_id, deadline())
+}
+
+fn alter_table(client: &kudu::Client,
+               table_name: &str,
+               steps: Vec<AlterTableStep>)
+               -> kudu::Result<()> {
+    let mut builder = kudu::AlterTableBuilder::new();
+    let table = try!(client.open_table(table_name, deadline()));
+    let mut columns = Vec::new();
+    for &idx in table.partition_schema().range_partition_schema().columns() {
+        columns.push((idx, table.schema().columns()[idx].data_type()));
+    }
+
+    let mut renamed_name = table_name;
+
+    for step in steps {
+        match step {
+            AlterTableStep::RenameTable { table_name } => {
+                builder.rename_table_by_ref(table_name);
+                renamed_name = table_name;
+            },
+            AlterTableStep::RenameColumn { old_column_name, new_column_name } => {
+                builder.rename_column_by_ref(old_column_name, new_column_name);
+            },
+            AlterTableStep::AddColumn { column } => {
+                builder.add_column_by_ref(column.into_column());
+            },
+            AlterTableStep::DropColumn { column_name } => {
+                builder.drop_column_by_ref(column_name);
+            },
+            AlterTableStep::AddRangePartition { lower_bound, upper_bound } => {
+                let mut lower = table.schema().new_row();
+                let mut upper = table.schema().new_row();
+                try!(populate_row(&mut lower, &columns, &lower_bound));
+                try!(populate_row(&mut upper, &columns, &upper_bound));
+                builder.add_range_partition_by_ref(&lower, &upper);
+            },
+            AlterTableStep::DropRangePartition { lower_bound, upper_bound } => {
+                let mut lower = table.schema().new_row();
+                let mut upper = table.schema().new_row();
+                try!(populate_row(&mut lower, &columns, &lower_bound));
+                try!(populate_row(&mut upper, &columns, &upper_bound));
+                builder.drop_range_partition_by_ref(&lower, &upper);
+            },
+        }
+    }
+
+    try!(client.alter_table(table_name, builder, deadline()));
+    // TODO: this wait should use the table ID returned from the alter command
+    client.wait_for_table_alteration(renamed_name, deadline())
 }
 
 /*
@@ -479,6 +519,23 @@ impl <'a> ColumnSpec<'a> {
             block_size: block_size,
         }
     }
+
+    pub fn into_column(&self) -> kudu::Column {
+        let mut column = kudu::Column::builder(self.name, self.data_type);
+        if let Some(false) = self.nullable {
+            column.set_not_null_by_ref();
+        }
+        if let Some(encoding_type) = self.encoding_type {
+            column.set_encoding_by_ref(encoding_type);
+        }
+        if let Some(compression_type) = self.compression_type {
+            column.set_compression_by_ref(compression_type);
+        }
+        if let Some(block_size) = self.block_size {
+            column.set_block_size_by_ref(block_size);
+        }
+        column
+    }
 }
 
 #[derive(Debug, PartialEq)]
@@ -508,6 +565,31 @@ impl <'a> HashPartition<'a> {
     pub fn new(columns: Vec<&'a str>, seed: Option<u32>, buckets: i32) -> HashPartition<'a> {
         HashPartition { columns: columns, seed: seed, buckets: buckets }
     }
+}
+
+#[derive(Debug, PartialEq)]
+pub enum AlterTableStep<'a> {
+    RenameTable {
+        table_name: &'a str
+    },
+    RenameColumn {
+        old_column_name: &'a str,
+        new_column_name: &'a str,
+    },
+    AddColumn {
+        column: ColumnSpec<'a>,
+    },
+    DropColumn {
+        column_name: &'a str,
+    },
+    AddRangePartition {
+        lower_bound: Vec<Literal<'a>>,
+        upper_bound: Vec<Literal<'a>>,
+    },
+    DropRangePartition {
+        lower_bound: Vec<Literal<'a>>,
+        upper_bound: Vec<Literal<'a>>,
+    },
 }
 
 #[derive(Debug, PartialEq, Eq)]

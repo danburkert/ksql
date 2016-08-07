@@ -72,12 +72,12 @@ Commands:
         Create a table with the specified columns and options.
 
     ALTER TABLE <table> [
-        RENAME TABLE <new-table-name> |
-        RENAME COLUMN <old-column-name> <new-column-name> |
-        ADD COLUMN (<col> <data-type> [NULLABLE | NOT NULL]
-                                      [ENCODING <encoding>]
-                                      [COMPRESSION <compression>]
-                                      [BLOCK SIZE <block-size>]) |
+        RENAME TO <new-table-name> |
+        RENAME COLUMN <old-column-name> TO <new-column-name> |
+        ADD COLUMN <col> <data-type> [NULLABLE | NOT NULL]
+                                     [ENCODING <encoding>]
+                                     [COMPRESSION <compression>]
+                                     [BLOCK SIZE <block-size>] |
         DROP COLUMN <column-name> |
         ADD RANGE PARTITION (<col-val>, ..), (<col-val>, ..) |
         DROP RANGE PARTITION (<col-val>, ..), (<col-val>, ..)
