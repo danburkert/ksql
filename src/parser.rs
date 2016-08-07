@@ -1844,7 +1844,7 @@ SELECT";
                        name: "t",
                        columns: vec![command::ColumnSpec::new("foo", kudu::DataType::Int32, None, None, None, None)],
                        primary_key: vec!["foo"],
-                       range_partition: Some(command::RangePartition::new(vec!["foo"], vec![])),
+                       range_partition: Some(command::RangePartition::new(vec!["foo"], vec![], vec![])),
                        hash_partitions: Vec::new(),
                        replicas: None,
                    }, ""));
@@ -1870,8 +1870,34 @@ SELECT";
                        name: "t",
                        columns: vec![command::ColumnSpec::new("foo", kudu::DataType::Int32, None, None, None, None)],
                        primary_key: vec!["foo"],
-                       range_partition: Some(command::RangePartition::new(vec!["a"], vec![vec![command::Literal::Integer(1)],
-                                                                                          vec![command::Literal::Integer(2)]])),
+                       range_partition: Some(command::RangePartition::new(vec!["a"],
+                                                                          vec![vec![command::Literal::Integer(1)],
+                                                                               vec![command::Literal::Integer(2)]],
+                                                                          vec![])),
+                       hash_partitions: vec![command::HashPartition::new(vec!["b"], None, 99),
+                                             command::HashPartition::new(vec!["c"], Some(9), 50)],
+                       replicas: Some(10),
+                   }, ""));
+
+        assert_eq!(parser.parse("create table t (foo int32) \
+                                primary key (foo) \
+                                DISTRIBUTE BY \
+                                    RANGE (a) SPLIT ROWS (1), (2) \
+                                              BOUNDS ((0), (10)), ((100), ()) \
+                                    HASH (b) INTO 99 buckets \
+                                    hash (c) with seed 9 into 50 buckets \
+                                WITH 10 REPLICAS;"),
+                   ParseResult::Ok(command::Command::CreateTable {
+                       name: "t",
+                       columns: vec![command::ColumnSpec::new("foo", kudu::DataType::Int32, None, None, None, None)],
+                       primary_key: vec!["foo"],
+                       range_partition: Some(command::RangePartition::new(vec!["a"],
+                                                                          vec![vec![command::Literal::Integer(1)],
+                                                                               vec![command::Literal::Integer(2)]],
+                                                                          vec![(vec![command::Literal::Integer(0)],
+                                                                                vec![command::Literal::Integer(10)]),
+                                                                               (vec![command::Literal::Integer(100)],
+                                                                                vec![])])),
                        hash_partitions: vec![command::HashPartition::new(vec!["b"], None, 99),
                                              command::HashPartition::new(vec!["c"], Some(9), 50)],
                        replicas: Some(10),
@@ -2109,12 +2135,22 @@ SELECT";
         assert_eq!(parser.parse("RANGE(a, b, c) SPLIT ROWS (123), (123, \"foo\")"),
                    ParseResult::Ok(command::RangePartition::new(vec!["a", "b", "c"],
                                                                 vec![vec![command::Literal::Integer(123)],
-                                                                        vec![command::Literal::Integer(123),
-                                                                            command::Literal::String(Cow::Borrowed("foo"))]]), ""));
+                                                                     vec![command::Literal::Integer(123),
+                                                                          command::Literal::String(Cow::Borrowed("foo"))]],
+                                                                vec![]), ""));
 
         assert_eq!(parser.parse("RANGE(a, b, c)"),
-                   ParseResult::Ok(command::RangePartition::new(vec!["a", "b", "c"], vec![]), ""));
+                   ParseResult::Ok(command::RangePartition::new(vec!["a", "b", "c"], vec![], vec![]), ""));
 
+        assert_eq!(parser.parse("RANGE(a, b, c) BOUNDS ((123.456, \"foo\"), (555, \"bar\")), ((10), (20))"),
+                   ParseResult::Ok(command::RangePartition::new(vec!["a", "b", "c"],
+                                                                vec![],
+                                                                vec![(vec![command::Literal::Float(123.456),
+                                                                           command::Literal::String(Cow::Borrowed("foo"))],
+                                                                      vec![command::Literal::Integer(555),
+                                                                           command::Literal::String(Cow::Borrowed("bar"))]),
+                                                                     (vec![command::Literal::Integer(10)],
+                                                                      vec![command::Literal::Integer(20)])]), ""));
     }
 
     #[test]

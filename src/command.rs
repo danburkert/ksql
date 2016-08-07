@@ -250,13 +250,10 @@ fn alter_table(client: &kudu::Client,
         columns.push((idx, table.schema().columns()[idx].data_type()));
     }
 
-    let mut renamed_name = table_name;
-
     for step in steps {
         match step {
             AlterTableStep::RenameTable { table_name } => {
                 builder.rename_table_by_ref(table_name);
-                renamed_name = table_name;
             },
             AlterTableStep::RenameColumn { old_column_name, new_column_name } => {
                 builder.rename_column_by_ref(old_column_name, new_column_name);
@@ -284,9 +281,9 @@ fn alter_table(client: &kudu::Client,
         }
     }
 
-    try!(client.alter_table(table_name, builder, deadline()));
+    let table_id = try!(client.alter_table(table_name, builder, deadline()));
     // TODO: this wait should use the table ID returned from the alter command
-    client.wait_for_table_alteration(renamed_name, deadline())
+    client.wait_for_table_alteration_by_id(&table_id, deadline())
 }
 
 /*
