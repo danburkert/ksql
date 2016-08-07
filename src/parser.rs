@@ -1077,10 +1077,10 @@ impl <'a> Parser<'a> for Nullable {
     }
 }
 
-struct CreateColumn;
-impl <'a> Parser<'a> for CreateColumn {
-    type Output = command::CreateColumn<'a>;
-    fn parse(&self, input: &'a str) -> ParseResult<'a, command::CreateColumn<'a>> {
+struct ColumnSpec;
+impl <'a> Parser<'a> for ColumnSpec {
+    type Output = command::ColumnSpec<'a>;
+    fn parse(&self, input: &'a str) -> ParseResult<'a, command::ColumnSpec<'a>> {
         let (name, remaining) = try_parse!(ColumnName.parse(input));
         let (data_type, remaining) = try_parse!(Chomp1.and_then(DataType).parse(remaining));
 
@@ -1089,12 +1089,12 @@ impl <'a> Parser<'a> for CreateColumn {
         let (compression_type, remaining) = try_parse!(OptionalClause(CompressionType).parse(remaining));
         let (block_size, remaining) = try_parse!(OptionalClause(BlockSize).parse(remaining));
 
-        ParseResult::Ok(command::CreateColumn::new(name,
-                                                   data_type,
-                                                   nullable,
-                                                   encoding_type,
-                                                   compression_type,
-                                                   block_size),
+        ParseResult::Ok(command::ColumnSpec::new(name,
+                                                 data_type,
+                                                 nullable,
+                                                 encoding_type,
+                                                 compression_type,
+                                                 block_size),
                         remaining)
     }
 }
@@ -1116,7 +1116,26 @@ impl <'a> Parser<'a> for PrimaryKey {
     }
 }
 
-// RANGE (a, b, c) SPLIT ROWS (123), (456);
+// ((0, "foo"), (456, "bar"))
+struct RangeBound;
+impl <'a> Parser<'a> for RangeBound {
+    type Output = (Vec<command::Literal<'a>>, Vec<command::Literal<'a>>);
+    fn parse(&self, input: &'a str) -> ParseResult<'a, (Vec<command::Literal<'a>>,
+                                                        Vec<command::Literal<'a>>)> {
+        let (lower_bound, remaining) = try_parse!(Char('(', "(").and_then(Chomp0)
+                                                                .and_then(Row)
+                                                                .followed_by(Chomp0)
+                                                                .followed_by(Char(',', ","))
+                                                                .followed_by(Chomp0)
+                                                                .parse(input));
+        let (upper_bound, remaining) = try_parse!(Row.followed_by(Chomp0)
+                                                     .followed_by(Char(')', ")"))
+                                                     .parse(remaining));
+        ParseResult::Ok((lower_bound, upper_bound), remaining)
+    }
+}
+
+// RANGE (a, b, c) SPLIT ROWS (123), (456), RANGE BOUNDS ((0), (250)), ((400), (800));
 struct RangePartition;
 impl <'a> Parser<'a> for RangePartition {
     type Output = command::RangePartition<'a>;
@@ -1136,10 +1155,20 @@ impl <'a> Parser<'a> for RangePartition {
                                                       .and_then(Keyword("ROWS"))
                                                       .and_then(Chomp0)
                                                       .and_then(Delimited1(Row, Chomp0.and_then(Char(',', ","))
-                                                                                                      .and_then(Chomp0))))
+                                                                                      .and_then(Chomp0))))
                        .map(|o| o.unwrap_or(Vec::new()))
                        .parse(remaining));
-        ParseResult::Ok(command::RangePartition::new(columns, split_rows), remaining)
+
+        let (bounds, remaining) =
+            try_parse!(OptionalClause(Keyword("BOUNDS").and_then(Chomp1)
+                                                       .and_then(Delimited1(RangeBound,
+                                                                            Chomp0.and_then(Char(',', ","))
+                                                                                  .and_then(Chomp0))))
+                       .map(|o| o.unwrap_or(Vec::new()))
+                       .parse(remaining));
+
+
+        ParseResult::Ok(command::RangePartition::new(columns, split_rows, bounds), remaining)
     }
 }
 
@@ -1204,7 +1233,7 @@ impl <'a> Parser<'a> for CreateTable {
 
         let (columns, remaining) =
             try_parse!(Chomp1.and_then(Char('(', "("))
-                                              .and_then(Delimited1(Chomp0.and_then(CreateColumn),
+                                              .and_then(Delimited1(Chomp0.and_then(ColumnSpec),
                                                                    Chomp0.and_then(Char(',', ","))))
                                               .followed_by(Chomp0)
                                               .followed_by(Char(')', ")"))
@@ -1357,7 +1386,7 @@ mod test {
         Chomp0,
         ColumnName,
         Command,
-        CreateColumn,
+        ColumnSpec,
         CreateTable,
         DataType,
         Delimited1,
@@ -1603,24 +1632,24 @@ SELECT";
 
     #[test]
     fn test_create_column() {
-        let parser = CreateColumn;
+        let parser = ColumnSpec;
         assert_eq!(parser.parse("foo int32"),
-                   ParseResult::Ok(command::CreateColumn::new("foo",
-                                                              kudu::DataType::Int32,
-                                                              None, None, None, None), ""));
+                   ParseResult::Ok(command::ColumnSpec::new("foo",
+                                                            kudu::DataType::Int32,
+                                                            None, None, None, None), ""));
         assert_eq!(parser.parse("foo int32 NULLABLE BLOCK SIZE 4096;"),
-                   ParseResult::Ok(command::CreateColumn::new("foo",
-                                                              kudu::DataType::Int32,
-                                                              Some(true),
-                                                              None, None, Some(4096)), ";"));
+                   ParseResult::Ok(command::ColumnSpec::new("foo",
+                                                            kudu::DataType::Int32,
+                                                            Some(true),
+                                                            None, None, Some(4096)), ";"));
 
         assert_eq!(parser.parse("foo timestamp NOT NULL ENCODING runlength COMPRESSION zlib BLOCK SIZE 99;"),
-                   ParseResult::Ok(command::CreateColumn::new("foo",
-                                                              kudu::DataType::Timestamp,
-                                                              Some(false),
-                                                              Some(kudu::EncodingType::RunLength),
-                                                              Some(kudu::CompressionType::Zlib),
-                                                              Some(99)), ";"));
+                   ParseResult::Ok(command::ColumnSpec::new("foo",
+                                                            kudu::DataType::Timestamp,
+                                                            Some(false),
+                                                            Some(kudu::EncodingType::RunLength),
+                                                            Some(kudu::CompressionType::Zlib),
+                                                            Some(99)), ";"));
     }
 
     #[test]
@@ -1641,9 +1670,9 @@ SELECT";
                    ParseResult::Ok(command::Command::CreateTable {
                        name: "t",
                        columns: vec![
-                           command::CreateColumn::new("a", kudu::DataType::Int32, Some(false), None, None, None),
-                           command::CreateColumn::new("b", kudu::DataType::Timestamp, None, None, None, None),
-                           command::CreateColumn::new("c", kudu::DataType::String, None, None, None, None),
+                           command::ColumnSpec::new("a", kudu::DataType::Int32, Some(false), None, None, None),
+                           command::ColumnSpec::new("b", kudu::DataType::Timestamp, None, None, None, None),
+                           command::ColumnSpec::new("c", kudu::DataType::String, None, None, None, None),
                        ],
                        primary_key: vec!["a", "c"],
                        range_partition: None,
@@ -1654,7 +1683,7 @@ SELECT";
         assert_eq!(parser.parse("create table t (foo int32) primary key (foo) DISTRIBUTE BY RANGE (foo);"),
                    ParseResult::Ok(command::Command::CreateTable {
                        name: "t",
-                       columns: vec![command::CreateColumn::new("foo", kudu::DataType::Int32, None, None, None, None)],
+                       columns: vec![command::ColumnSpec::new("foo", kudu::DataType::Int32, None, None, None, None)],
                        primary_key: vec!["foo"],
                        range_partition: Some(command::RangePartition::new(vec!["foo"], vec![])),
                        hash_partitions: Vec::new(),
@@ -1664,7 +1693,7 @@ SELECT";
         assert_eq!(parser.parse("create table t (foo int32) primary key (foo) DISTRIBUTE BY HASH (foo, bar) INTO 99 buckets;"),
                    ParseResult::Ok(command::Command::CreateTable {
                        name: "t",
-                       columns: vec![command::CreateColumn::new("foo", kudu::DataType::Int32, None, None, None, None)],
+                       columns: vec![command::ColumnSpec::new("foo", kudu::DataType::Int32, None, None, None, None)],
                        primary_key: vec!["foo"],
                        range_partition: None,
                        hash_partitions: vec![command::HashPartition::new(vec!["foo", "bar"], None, 99)],
@@ -1680,7 +1709,7 @@ SELECT";
                                 WITH 10 REPLICAS;"),
                    ParseResult::Ok(command::Command::CreateTable {
                        name: "t",
-                       columns: vec![command::CreateColumn::new("foo", kudu::DataType::Int32, None, None, None, None)],
+                       columns: vec![command::ColumnSpec::new("foo", kudu::DataType::Int32, None, None, None, None)],
                        primary_key: vec!["foo"],
                        range_partition: Some(command::RangePartition::new(vec!["a"], vec![vec![command::Literal::Integer(1)],
                                                                                           vec![command::Literal::Integer(2)]])),

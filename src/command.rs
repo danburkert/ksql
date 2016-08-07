@@ -74,7 +74,7 @@ pub enum Command<'a> {
     ///                [HASH (<col>, ..) [WITH SEED <seed>] INTO <buckets> BUCKETS]..;
     CreateTable {
         name: &'a str,
-        columns: Vec<CreateColumn<'a>>,
+        columns: Vec<ColumnSpec<'a>>,
         primary_key: Vec<&'a str>,
         range_partition: Option<RangePartition<'a>>,
         hash_partitions: Vec<HashPartition<'a>>,
@@ -174,7 +174,7 @@ impl <'a> Command<'a> {
 
 fn create_table<'a>(client: &kudu::Client,
                     name: &str,
-                    columns: Vec<CreateColumn>,
+                    columns: Vec<ColumnSpec>,
                     primary_key: Vec<&str>,
                     range_partition: Option<RangePartition<'a>>,
                     hash_partitions: Vec<HashPartition>,
@@ -182,30 +182,28 @@ fn create_table<'a>(client: &kudu::Client,
                     -> kudu::Result<()> {
     let mut schema = kudu::SchemaBuilder::new();
     for column in columns {
-        let mut builder = schema.add_column(column.name, column.data_type);
+        let mut builder = kudu::Column::builder(column.name, column.data_type);
         if let Some(false) = column.nullable {
-            builder.set_not_null();
+            builder.set_not_null_by_ref();
         }
         if let Some(encoding_type) = column.encoding_type {
-            builder.set_encoding(encoding_type);
+            builder.set_encoding_by_ref(encoding_type);
         }
         if let Some(compression_type) = column.compression_type {
-            builder.set_compression(compression_type);
+            builder.set_compression_by_ref(compression_type);
         }
         if let Some(block_size) = column.block_size {
-            builder.set_block_size(block_size);
+            builder.set_block_size_by_ref(block_size);
         }
+        schema.add_column_by_ref(builder);
     }
-    schema.set_primary_key(primary_key.iter().map(ToString::to_string).collect::<Vec<_>>());
+    schema.set_primary_key_by_ref(primary_key);
     let schema = try!(schema.build());
 
     let mut table_builder = kudu::TableBuilder::new(name, schema.clone());
 
     if let Some(range_partition) = range_partition {
-        table_builder.set_range_partition_columns(range_partition.columns
-                                                                 .iter()
-                                                                 .map(ToString::to_string)
-                                                                 .collect::<Vec<_>>());
+        table_builder.set_range_partition_columns(range_partition.columns.clone());
 
         // Find column by name in schema, then map into the index and type
         let mut columns = Vec::with_capacity(range_partition.columns.len());
@@ -228,12 +226,20 @@ fn create_table<'a>(client: &kudu::Client,
             try!(populate_row(&mut row, &columns, range_split));
             table_builder.add_range_split(row);
         }
+
+        for (ref lower, ref upper) in range_partition.bounds {
+            let mut lower_bound = schema.new_row();
+            let mut upper_bound = schema.new_row();
+            try!(populate_row(&mut lower_bound, &columns, lower));
+            try!(populate_row(&mut upper_bound, &columns, upper));
+            table_builder.add_range_bound(lower_bound, upper_bound);
+        }
     }
 
     for hash_partition in hash_partitions {
-        table_builder.add_hash_partitions_with_seed(hash_partition.columns.iter().map(ToString::to_string).collect::<Vec<_>>(),
-                                                    hash_partition.buckets,
-                                                    hash_partition.seed.unwrap_or(0));
+        table_builder.add_hash_partition_with_seed(hash_partition.columns,
+                                                   hash_partition.buckets,
+                                                   hash_partition.seed.unwrap_or(0));
     }
 
     if let Some(replicas) = replicas {
@@ -447,7 +453,7 @@ fn build_rows(schema: &kudu::Schema,
 */
 
 #[derive(Debug, PartialEq, Eq)]
-pub struct CreateColumn<'a> {
+pub struct ColumnSpec<'a> {
     name: &'a str,
     data_type: kudu::DataType,
     nullable: Option<bool>,
@@ -456,15 +462,15 @@ pub struct CreateColumn<'a> {
     block_size: Option<i32>,
 }
 
-impl <'a> CreateColumn<'a> {
+impl <'a> ColumnSpec<'a> {
     pub fn new(name: &'a str,
                data_type: kudu::DataType,
                nullable: Option<bool>,
                encoding_type: Option<kudu::EncodingType>,
                compression_type: Option<kudu::CompressionType>,
                block_size: Option<i32>)
-               -> CreateColumn<'a> {
-        CreateColumn {
+               -> ColumnSpec<'a> {
+        ColumnSpec {
             name: name,
             data_type: data_type,
             nullable: nullable,
@@ -479,11 +485,15 @@ impl <'a> CreateColumn<'a> {
 pub struct RangePartition<'a> {
     columns: Vec<&'a str>,
     split_rows: Vec<Vec<Literal<'a>>>,
+    bounds: Vec<(Vec<Literal<'a>>, Vec<Literal<'a>>)>,
 }
 
 impl <'a> RangePartition<'a> {
-    pub fn new(columns: Vec<&'a str>, split_rows: Vec<Vec<Literal<'a>>>) -> RangePartition<'a> {
-        RangePartition { columns: columns, split_rows: split_rows }
+    pub fn new(columns: Vec<&'a str>,
+               split_rows: Vec<Vec<Literal<'a>>>,
+               bounds: Vec<(Vec<Literal<'a>>, Vec<Literal<'a>>)>)
+               -> RangePartition<'a> {
+        RangePartition { columns: columns, split_rows: split_rows, bounds: bounds }
     }
 }
 

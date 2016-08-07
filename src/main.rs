@@ -65,10 +65,23 @@ Commands:
                                             [COMPRESSION <compression>]
                                             [BLOCK SIZE <block-size>], ..)
     PRIMARY KEY (<col>, ..)
-    DISTRIBUTE BY [RANGE (<col>, ..) [SPLIT ROWS (<col-val>, ..)[, (<col-val>, ..)..]]]
+    DISTRIBUTE BY [RANGE (<col>, ..) [SPLIT ROWS (<col-val>, ..)[, ..]]
+                                     [BOUNDS ((<col-val>, ..), (<col-val>, ..))[, ..]]
                   [HASH (<col>, ..) [WITH SEED <seed>] INTO <buckets> BUCKETS]..
     WITH <replicas> REPLICAS;
         Create a table with the specified columns and options.
+
+    ALTER TABLE <table> [
+        RENAME TABLE <new-table-name> |
+        RENAME COLUMN <old-column-name> <new-column-name> |
+        ADD COLUMN (<col> <data-type> [NULLABLE | NOT NULL]
+                                      [ENCODING <encoding>]
+                                      [COMPRESSION <compression>]
+                                      [BLOCK SIZE <block-size>]) |
+        DROP COLUMN <column-name> |
+        ADD RANGE PARTITION (<col-val>, ..), (<col-val>, ..) |
+        DROP RANGE PARTITION (<col-val>, ..), (<col-val>, ..)
+    ], ..;
 ";
 
 /*
@@ -187,6 +200,7 @@ fn resolve_master(input: &str) -> SocketAddr {
 }
 
 fn callback(input: &str) -> Vec<String> {
+    // TODO: this can currently return duplicate hints
     let mut completions = Vec::new();
     match parser::Command.parse(input) {
         parser::ParseResult::Incomplete(hints) => {
