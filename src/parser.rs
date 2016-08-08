@@ -865,6 +865,7 @@ impl <'a> Parser<'a> for Command {
                            .or_else(ShowTableTablets)
                            .or_else(ShowTableReplicas)
                            .or_else(DescribeTable)
+                           .or_else(ShowCreateTable)
                            .or_else(Select)
                            .or_else(Insert)
                            .or_else(CreateTable)
@@ -1014,6 +1015,24 @@ impl <'a> Parser<'a> for DescribeTable {
             .and_then(Keyword("TABLE"))
             .and_then(Chomp1)
             .and_then(TableName).map(|table| command::Command::DescribeTable { table: table })
+            .followed_by(Chomp0)
+            .followed_by(Char(';', ";"))
+            .parse(input)
+    }
+}
+
+/// Parses a SHOW CREATE TABLE statement.
+struct ShowCreateTable;
+impl <'a> Parser<'a> for ShowCreateTable {
+    type Output = command::Command<'a>;
+    fn parse(&self, input: &'a str) -> ParseResult<'a, command::Command<'a>> {
+        Keyword("SHOW")
+            .and_then(Chomp1)
+            .and_then(Keyword("CREATE"))
+            .and_then(Chomp1)
+            .and_then(Keyword("TABLE"))
+            .and_then(Chomp1)
+            .and_then(TableName).map(|table| command::Command::ShowCreateTable { table: table })
             .followed_by(Chomp0)
             .followed_by(Char(';', ";"))
             .parse(input)

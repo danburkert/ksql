@@ -1,6 +1,9 @@
+use std::fmt;
 use std::io::Write;
-use std::time::Duration;
+use std::time::{Duration, UNIX_EPOCH, SystemTime};
 
+use chrono;
+use itertools::Itertools;
 use kudu;
 use libc;
 use term;
@@ -307,7 +310,115 @@ impl Terminal {
         writeln!(&mut self.out, "").unwrap();
     }
 
+    pub fn print_create_table(&mut self, table: kudu::Table, tablets: Vec<kudu::Tablet>) {
+        writeln!(&mut self.out, "CREATE TABLE {:?} (", table.name()).unwrap();
+        writeln!(&mut self.out, "\t{:?}",
+                 table.schema()
+                      .columns()
+                      .iter()
+                      .format_default(",\n\t")).unwrap();
+        writeln!(&mut self.out, ") PRIMARY KEY ({:?})",
+                 table.schema()
+                      .primary_key()
+                      .iter()
+                      .map(kudu::Column::name)
+                      .format_default(", ")).unwrap();
+        writeln!(&mut self.out, "DISTRIBUTE BY").unwrap();
+
+        if table.partition_schema().range_partition_schema().columns().len() > 0 {
+            writeln!(&mut self.out, "\tRANGE ({:?})",
+                     table.partition_schema()
+                          .range_partition_schema()
+                          .columns()
+                          .iter()
+                          .map(|&idx| table.schema().columns()[idx].name())
+                          .format_default(", ")).unwrap();
+
+            let bounds = tablets.iter()
+                                .map(kudu::Tablet::partition)
+                                .filter(|partition| partition.lower_bound().hash_buckets().iter().all(|&b| b == 0))
+                                .format(",\n\t\t\t", |partition, f| f(&format_args!("(({:?}), ({:?}))",
+                                                                             RangePartitionKey { partition_key: partition.lower_bound() },
+                                                                             RangePartitionKey { partition_key: partition.upper_bound() })));
+
+
+            writeln!(&mut self.out, "\t\tBOUNDS  {}", bounds).unwrap();
+        }
+
+        for hash_partition in table.partition_schema().hash_partition_schemas() {
+            let seed = if hash_partition.seed() == 0 {
+                String::new()
+            } else {
+                format!("WITH SEED {} ", hash_partition.seed())
+            };
+
+            writeln!(&mut self.out, "\tHASH ({:?}) {}INTO {} BUCKETS",
+                     hash_partition.columns()
+                                   .iter()
+                                   .map(|&idx| table.schema().columns()[idx].name())
+                                   .format_default(", "),
+                     seed,
+                     hash_partition.num_buckets()).unwrap();
+        }
+
+        writeln!(&mut self.out, "WITH {} REPLICAS;", table.num_replicas()).unwrap();
+    }
+
     pub fn print_not_implemented(&mut self) {
         writeln!(&mut self.out, "not yet implemented!").unwrap();
     }
+}
+
+/// The range component of a partition key.
+struct RangePartitionKey<'a> {
+    partition_key: &'a kudu::PartitionKey,
+}
+
+impl <'a> fmt::Debug for RangePartitionKey<'a> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        let mut is_first = true;
+        let row = &self.partition_key.range_row();
+        for &idx in self.partition_key.partition_schema().range_partition_schema().columns() {
+            if !row.is_set(idx).unwrap() { break; }
+            if is_first { is_first = false; }
+            else { try!(write!(f, ", ")) }
+            let column = &row.schema().columns()[idx];
+            match column.data_type() {
+                kudu::DataType::Bool => try!(write!(f, "{}", row.get::<bool>(idx).unwrap())),
+                kudu::DataType::Int8 => try!(write!(f, "{}", row.get::<i8>(idx).unwrap())),
+                kudu::DataType::Int16 => try!(write!(f, "{}", row.get::<i16>(idx).unwrap())),
+                kudu::DataType::Int32 => try!(write!(f, "{}", row.get::<i32>(idx).unwrap())),
+                kudu::DataType::Int64 => try!(write!(f, "{}", row.get::<i64>(idx).unwrap())),
+                kudu::DataType::Timestamp => try!(fmt_timestamp(f, row.get::<SystemTime>(idx).unwrap())),
+                kudu::DataType::Float => try!(write!(f, "{}", row.get::<f32>(idx).unwrap())),
+                kudu::DataType::Double => try!(write!(f, "{}", row.get::<f64>(idx).unwrap())),
+                kudu::DataType::Binary => try!(fmt_hex(f, row.get::<&[u8]>(idx).unwrap())),
+                kudu::DataType::String => try!(write!(f, "{:?}", row.get::<&str>(idx).unwrap())),
+            }
+        }
+        Ok(())
+    }
+}
+
+pub fn fmt_timestamp(f: &mut fmt::Formatter, timestamp: SystemTime) -> fmt::Result {
+    let datetime = if timestamp < UNIX_EPOCH {
+        chrono::NaiveDateTime::from_timestamp(0, 0) -
+            chrono::Duration::from_std(UNIX_EPOCH.duration_since(timestamp).unwrap()).unwrap()
+    } else {
+        chrono::NaiveDateTime::from_timestamp(0, 0) +
+            chrono::Duration::from_std(timestamp.duration_since(UNIX_EPOCH).unwrap()).unwrap()
+    };
+
+    write!(f, "{}", datetime.format("%Y-%m-%dT%H:%M:%S%.6fZ"))
+}
+
+pub fn fmt_hex<T>(f: &mut fmt::Formatter, bytes: &[T]) -> fmt::Result where T: fmt::LowerHex {
+    if bytes.is_empty() {
+        return write!(f, "0x")
+    }
+    try!(write!(f, "{:#x}", bytes[0]));
+    for b in &bytes[1..] {
+        try!(write!(f, "{:x}", b));
+    }
+    Ok(())
 }

@@ -1,5 +1,6 @@
 extern crate chrono;
 extern crate docopt;
+extern crate itertools;
 extern crate kudu;
 extern crate libc;
 extern crate linenoise;

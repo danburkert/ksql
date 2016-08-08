@@ -112,7 +112,14 @@ impl <'a> Command<'a> {
                 Err(error) => term.print_kudu_error(&error),
             },
             Command::ShowCreateTable { table } => {
-                term.print_not_implemented()
+                let deadline = deadline();
+                match client.open_table(table, deadline) {
+                    Ok(table) => match table.list_tablets(deadline) {
+                        Ok(tablets) => term.print_create_table(table, tablets),
+                        Err(error) => term.print_kudu_error(&error),
+                    },
+                    Err(error) => term.print_kudu_error(&error),
+                }
             },
             Command::ShowMasters => match client.list_masters(deadline()) {
                 Ok(masters) => term.print_masters(masters),
