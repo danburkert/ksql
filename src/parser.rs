@@ -435,12 +435,12 @@ impl <'a> Parser<'a> for Char {
     }
 }
 
-struct I32;
-impl <'a> Parser<'a> for I32 {
-    type Output = i32;
-    fn parse(&self, input: &'a str) -> ParseResult<'a, i32> {
+struct U32;
+impl <'a> Parser<'a> for U32 {
+    type Output = u32;
+    fn parse(&self, input: &'a str) -> ParseResult<'a, u32> {
         if input.is_empty() {
-            return ParseResult::Incomplete(vec![(Hint::Integer, input)]);
+            return ParseResult::Incomplete(vec![(Hint::PosInteger, input)]);
         }
 
         let mut idx = 0;
@@ -453,12 +453,13 @@ impl <'a> Parser<'a> for I32 {
         }
 
         let (int, rest) = input.split_at(idx);
-        match int.parse::<i32>() {
+        match int.parse::<u32>() {
             Ok(int) => ParseResult::Ok(int, rest),
             Err(_) => ParseResult::Err(vec![Hint::Integer], input),
         }
     }
 }
+
 
 /// Parses the provided keyword from the input. The keyword should be only ASCII
 /// capital letters, the parse is case-insensitive.
@@ -659,18 +660,6 @@ impl <'a> Parser<'a> for IntLiteral {
         match int.parse::<i64>() {
             Ok(int) => ParseResult::Ok(int, rest),
             Err(_) => ParseResult::Err(vec![Hint::Integer], input),
-        }
-    }
-}
-
-struct PosIntLiteral;
-impl <'a> Parser<'a> for PosIntLiteral {
-    type Output = u64;
-    fn parse(&self, input: &'a str) -> ParseResult<'a, u64> {
-        let (int, rest) = try_parse!(TakeWhile1(is_numeric, Hint::PosInteger).parse(input)); 
-        match int.parse::<u64>() {
-            Ok(int) => ParseResult::Ok(int, rest),
-            Err(_) => ParseResult::Err(vec![Hint::PosInteger], input),
         }
     }
 }
@@ -1104,12 +1093,12 @@ impl <'a> Parser<'a> for CompressionType {
 
 struct BlockSize;
 impl <'a> Parser<'a> for BlockSize {
-    type Output = i32;
-    fn parse(&self, input: &'a str) -> ParseResult<'a, i32> {
+    type Output = u32;
+    fn parse(&self, input: &'a str) -> ParseResult<'a, u32> {
         Keyword("BLOCK").and_then(Chomp1)
                         .and_then(Keyword("SIZE"))
                         .and_then(Chomp1)
-                        .and_then(I32)
+                        .and_then(U32)
                         .parse(input)
     }
 }
@@ -1239,13 +1228,12 @@ impl <'a> Parser<'a> for HashPartition {
         let (seed, remaining) = try_parse!(OptionalClause(Keyword("WITH").and_then(Chomp1)
                                                                          .and_then(Keyword("SEED"))
                                                                          .and_then(Chomp1)
-                                                                         .and_then(PosIntLiteral)
-                                                                         // TODO: checked cast
-                                                                         .map(|seed| seed as u32)).parse(remaining));
+                                                                         .and_then(U32))
+                                                                         .parse(remaining));
 
         let (buckets, remaining) = try_parse!(Chomp1.and_then(Keyword("INTO"))
                                                     .and_then(Chomp1)
-                                                    .and_then(I32)
+                                                    .and_then(U32)
                                                     .followed_by(Chomp1)
                                                     .followed_by(Keyword("BUCKETS"))
                                                     .parse(remaining));
@@ -1258,11 +1246,10 @@ impl <'a> Parser<'a> for HashPartition {
 // WITH 3 REPLICAS
 struct Replicas;
 impl <'a> Parser<'a> for Replicas {
-    type Output = i32;
-    fn parse(&self, input: &'a str) -> ParseResult<'a, i32> {
+    type Output = u32;
+    fn parse(&self, input: &'a str) -> ParseResult<'a, u32> {
         Keyword("WITH").and_then(Chomp1)
-                       .and_then(PosIntLiteral)
-                       .map(|i| { i as i32 })
+                       .and_then(U32)
                        .followed_by(Chomp1)
                        .followed_by(OrElse(Keyword("REPLICAS"), Keyword("REPLICA")))
                        .parse(input)
@@ -1574,7 +1561,7 @@ mod test {
         HashPartition,
         HexLiteral,
         Hint,
-        I32,
+        U32,
         Insert,
         IntLiteral,
         Keyword,
@@ -1583,11 +1570,9 @@ mod test {
         Noop,
         ParseResult,
         Parser,
-        PosIntLiteral,
         RangePartition,
         Row,
         Select,
-        ShowMasters,
         ShowTables,
         ShowTabletServers,
         TimestampLiteral,
@@ -1771,8 +1756,8 @@ SELECT";
     }
 
     #[test]
-    fn test_i32() {
-        let parser = I32;
+    fn test_u32() {
+        let parser = U32;
         assert_eq!(parser.parse("1234"), ParseResult::Ok(1234, ""));
         assert_eq!(parser.parse("1234 "), ParseResult::Ok(1234, " "));
         assert_eq!(parser.parse("123abc"), ParseResult::Ok(123, "abc"));
@@ -2009,27 +1994,6 @@ SELECT";
                    ParseResult::Err(vec![Hint::Integer], "f"));
         assert_eq!(parser.parse("-f"),
                    ParseResult::Err(vec![Hint::Integer], "-f"));
-    }
-
-    #[test]
-    fn test_pos_int_literal() {
-        let parser = PosIntLiteral;
-        assert_eq!(parser.parse("9"),
-                   ParseResult::Ok(9, ""));
-        assert_eq!(parser.parse("1234"),
-                   ParseResult::Ok(1234, ""));
-        assert_eq!(parser.parse("01234"),
-                   ParseResult::Ok(1234, ""));
-        assert_eq!(parser.parse("234xyz"),
-                   ParseResult::Ok(234, "xyz"));
-
-        assert_eq!(parser.parse(""),
-                   ParseResult::Incomplete(vec![(Hint::PosInteger, "")]));
-
-        assert_eq!(parser.parse("f"),
-                   ParseResult::Err(vec![Hint::PosInteger], "f"));
-        assert_eq!(parser.parse("-9"),
-                   ParseResult::Err(vec![Hint::PosInteger], "-9"));
     }
 
     #[test]

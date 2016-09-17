@@ -1,4 +1,5 @@
 use std::borrow::Cow;
+use std::sync::mpsc::sync_channel;
 use std::time::{
     Duration,
     Instant,
@@ -78,7 +79,7 @@ pub enum Command<'a> {
         primary_key: Vec<&'a str>,
         range_partition: Option<RangePartition<'a>>,
         hash_partitions: Vec<HashPartition<'a>>,
-        replicas: Option<i32>,
+        replicas: Option<u32>,
     },
 
     AlterTable {
@@ -164,15 +165,13 @@ impl <'a> Command<'a> {
                 */
                 term.print_not_implemented()
             },
-            Command::Insert { .. /*table, columns, rows*/ } => {
-                /*
-                let count = rows.len();
+            Command::Insert { table, columns, rows } => {
                 match insert(client, table, columns, rows) {
-                    Ok(_) => term.print_success(&format!("{} rows inserted", count)),
+                    Ok(stats) => term.print_success(&format!("{} rows inserted, {} rows failed",
+                                                             stats.successful_operations(),
+                                                             stats.failed_operations())),
                     Err(error) => term.print_kudu_error(&error),
                 }
-                */
-                term.print_not_implemented()
             },
             Command::CreateTable { name, columns, primary_key, range_partition, hash_partitions, replicas } => {
                 match create_table(client, name, columns, primary_key, range_partition, hash_partitions, replicas) {
@@ -196,7 +195,7 @@ fn create_table<'a>(client: &kudu::Client,
                     primary_key: Vec<&str>,
                     range_partition: Option<RangePartition<'a>>,
                     hash_partitions: Vec<HashPartition>,
-                    replicas: Option<i32>)
+                    replicas: Option<u32>)
                     -> kudu::Result<()> {
     let mut schema = kudu::SchemaBuilder::new();
     for column in columns {
@@ -220,7 +219,7 @@ fn create_table<'a>(client: &kudu::Client,
         for range_split in &range_partition.split_rows {
             let mut row = schema.new_row();
             try!(populate_row(&mut row, &columns, range_split));
-            table_builder.add_range_split(row);
+            table_builder.add_range_partition_split(row);
         }
 
         for (ref lower, ref upper) in range_partition.bounds {
@@ -228,7 +227,8 @@ fn create_table<'a>(client: &kudu::Client,
             let mut upper_bound = schema.new_row();
             try!(populate_row(&mut lower_bound, &columns, lower));
             try!(populate_row(&mut upper_bound, &columns, upper));
-            table_builder.add_range_bound(lower_bound, upper_bound);
+            table_builder.add_range_partition(kudu::RangePartitionBound::Inclusive(lower_bound),
+                                              kudu::RangePartitionBound::Exclusive(upper_bound));
         }
     }
 
@@ -276,14 +276,16 @@ fn alter_table(client: &kudu::Client,
                 let mut upper = table.schema().new_row();
                 try!(populate_row(&mut lower, &columns, &lower_bound));
                 try!(populate_row(&mut upper, &columns, &upper_bound));
-                builder.add_range_partition_by_ref(&lower, &upper);
+                builder.add_range_partition_by_ref(&kudu::RangePartitionBound::Inclusive(lower),
+                                                   &kudu::RangePartitionBound::Exclusive(upper));
             },
             AlterTableStep::DropRangePartition { lower_bound, upper_bound } => {
                 let mut lower = table.schema().new_row();
                 let mut upper = table.schema().new_row();
                 try!(populate_row(&mut lower, &columns, &lower_bound));
                 try!(populate_row(&mut upper, &columns, &upper_bound));
-                builder.drop_range_partition_by_ref(&lower, &upper);
+                builder.drop_range_partition_by_ref(&kudu::RangePartitionBound::Inclusive(lower),
+                                                    &kudu::RangePartitionBound::Exclusive(upper));
             },
         }
     }
@@ -405,46 +407,46 @@ fn count(client: &kudu::Client, table: &str) -> kudu::Result<Vec<Vec<String>>> {
     }
     Ok(vec![vec!["COUNT(*)".to_string(), count.to_string()]])
 }
+*/
 
 fn insert(client: &kudu::Client,
           table: &str,
           columns: Option<Vec<&str>>,
           rows: Vec<Vec<Literal>>)
-          -> kudu::Result<()> {
-    let schema = try!(client.get_table_schema(table));
-    let mut session = client.new_session();
-    session.set_timeout(&Duration::from_secs(60));
-    try!(session.set_flush_mode(kudu::FlushMode::ManualFlush));
+          -> kudu::Result<kudu::FlushStats> {
+    let table = try!(client.open_table(table, deadline()));
+
+    let writer = table.new_writer(kudu::WriterConfig::default());
 
     // Find column by name in schema, then map into the index and type
-    let num_columns = columns.as_ref().map(|cols| cols.len()).unwrap_or(schema.num_columns());
+    let num_columns = columns.as_ref().map(|cols| cols.len()).unwrap_or(table.schema().columns().len());
     let mut column_types = Vec::with_capacity(num_columns);
     if let Some(columns) = columns {
         for column in columns {
-            let index = try!(schema.find_column(column));
-            column_types.push((index, schema.column(index).data_type()));
+            let index = match table.schema().column_index(column) {
+                Some(index) => index,
+                None => return Err(kudu::Error::InvalidArgument(
+                        format!("column {:?} not found", column))),
+            };
+            column_types.push((index, table.schema().columns()[index].data_type()));
         }
     } else {
-        for index in 0..schema.num_columns() {
-            column_types.push((index, schema.column(index).data_type()));
+        for (index, column) in table.schema().columns().iter().enumerate() {
+            column_types.push((index, column.data_type()));
         }
     }
 
-    let table = try!(client.open_table(table));
-
     for row in rows {
-        if session.count_buffered_operations() > 1000 {
-            try!(session.flush());
-        };
-        let mut insert = table.new_insert();
-        try!(populate_row(&mut insert.row(), &column_types, &row));
-        try!(session.insert(insert))
+        let mut r = table.schema().new_row();
+
+        try!(populate_row(&mut r, &column_types, &row));
+        writer.insert(r);
     }
 
-    try!(session.flush());
-    session.close()
+    let (send, recv) = sync_channel(100);
+    writer.flush(move |stats| send.send(stats).unwrap());
+    Ok(recv.recv().unwrap())
 }
-*/
 
 /// Sets the columns in the partial row to the provided literal values.
 fn populate_row<'a>(row: &mut kudu::Row,
@@ -503,7 +505,7 @@ pub struct ColumnSpec<'a> {
     nullable: Option<bool>,
     encoding_type: Option<kudu::EncodingType>,
     compression_type: Option<kudu::CompressionType>,
-    block_size: Option<i32>,
+    block_size: Option<u32>,
 }
 
 impl <'a> ColumnSpec<'a> {
@@ -512,7 +514,7 @@ impl <'a> ColumnSpec<'a> {
                nullable: Option<bool>,
                encoding_type: Option<kudu::EncodingType>,
                compression_type: Option<kudu::CompressionType>,
-               block_size: Option<i32>)
+               block_size: Option<u32>)
                -> ColumnSpec<'a> {
         ColumnSpec {
             name: name,
@@ -562,11 +564,11 @@ impl <'a> RangePartition<'a> {
 pub struct HashPartition<'a> {
     columns: Vec<&'a str>,
     seed: Option<u32>,
-    buckets: i32,
+    buckets: u32,
 }
 
 impl <'a> HashPartition<'a> {
-    pub fn new(columns: Vec<&'a str>, seed: Option<u32>, buckets: i32) -> HashPartition<'a> {
+    pub fn new(columns: Vec<&'a str>, seed: Option<u32>, buckets: u32) -> HashPartition<'a> {
         HashPartition { columns: columns, seed: seed, buckets: buckets }
     }
 }
