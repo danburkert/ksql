@@ -10,8 +10,7 @@ keywords = ["kudu", "database"]
 chrono = "0.2"
 docopt = "0.6"
 itertools = "0.4"
-#kudu = { git = "https://github.com/danburkert/kudu-rs" }
-kudu = { path = "../kudu-rs" }
+kudu = { git = "https://github.com/danburkert/kudu-rs" }
 libc = "0.2"
 linenoise-rust = "0.2"
 rustc-serialize = "0.3"

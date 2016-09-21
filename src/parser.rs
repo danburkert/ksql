@@ -1267,16 +1267,53 @@ impl <'a> Parser<'a> for CreateTable {
                              .and_then(TableName)
                              .parse(input));
 
-        let (columns, remaining) =
-            try_parse!(Chomp1.and_then(Char('(', "("))
-                                              .and_then(Delimited1(Chomp0.and_then(ColumnSpec),
-                                                                   Chomp0.and_then(Char(',', ","))))
-                                              .followed_by(Chomp0)
-                                              .followed_by(Char(')', ")"))
-                                              .parse(remaining));
+        let (_, remaining) = try_parse!(Chomp1.and_then(Char('(', "(")).parse(remaining));
 
-        let (primary_key, remaining) =
-            try_parse!(Chomp1.and_then(PrimaryKey).parse(remaining));
+        let mut remaining = remaining;
+        let mut columns: Vec<command::ColumnSpec<'a>> = Vec::new();
+        let mut primary_key = None;
+
+        enum ColumnClause<'b> {
+            Column(command::ColumnSpec<'b>),
+            PrimaryKey(Vec<&'b str>),
+        }
+
+        loop {
+            if primary_key.is_none() {
+                let column_clause = OrElse(ColumnSpec.map(|spec| ColumnClause::Column(spec)),
+                                        PrimaryKey.map(|pk| ColumnClause::PrimaryKey(pk)));
+
+                let (clause, rem) = try_parse!(Chomp0.and_then(column_clause).parse(remaining));
+                match clause {
+                    ColumnClause::Column(column) => columns.push(column),
+                    ColumnClause::PrimaryKey(pk) => primary_key = Some(pk),
+                }
+                remaining = rem;
+            } else {
+                let (col, rem) = try_parse!(Chomp0.and_then(ColumnSpec).parse(remaining));
+                remaining = rem;
+                columns.push(col);
+            }
+
+            let (sep, rem) = try_parse!(Chomp0.and_then(Optional(Char(',', ","))).parse(remaining));
+            remaining = rem;
+            match sep {
+                Some(_) => match try_parse!(Chomp0.and_then(Optional(Char(')', ")"))).parse(remaining)) {
+                    (Some(_), _) => break,
+                    _ => (),
+                },
+                None => break,
+            }
+        }
+
+        if columns.is_empty() {
+            try_parse!(Chomp0.and_then(ColumnSpec).parse(remaining));
+        }
+        if primary_key.is_none() {
+            try_parse!(Chomp0.and_then(PrimaryKey).parse(remaining));
+        }
+
+        let (_, remaining) = try_parse!(Chomp0.and_then(Optional(Char(')', ")"))).parse(remaining));
 
         let (distribute_by, remaining) =
             try_parse!(OptionalClause(Keyword("DISTRIBUTE").and_then(Chomp1)
@@ -1301,7 +1338,7 @@ impl <'a> Parser<'a> for CreateTable {
         ParseResult::Ok(command::Command::CreateTable {
             name: name,
             columns: columns,
-            primary_key: primary_key,
+            primary_key: primary_key.unwrap(),
             range_partition: range_partition,
             hash_partitions: hash_partitions,
             replicas: replicas,
@@ -1336,7 +1373,6 @@ impl <'a> Parser<'a> for RenameColumn {
                                         .followed_by(Chomp1)
                                         .followed_by(Keyword("TO"))
                                         .followed_by(Chomp1)
-                                        .and_then(ColumnName)
                                         .parse(input));
         let (new_column_name, remaining) = try_parse!(ColumnName.parse(remaining));
         ParseResult::Ok(command::AlterTableStep::RenameColumn {
