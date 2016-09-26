@@ -477,7 +477,7 @@ fn populate_row<'a>(row: &mut kudu::Row,
             (_, &Literal::String(ref s)) => try!(row.set(column_idx, &s[..])),
             (_, &Literal::Binary(ref b)) => try!(row.set(column_idx, &b[..])),
             // TODO: add Row::set_null
-            (_, &Literal::Null) => try!(row.set::<Option<i32>>(column_idx, None)),
+            (_, &Literal::Null) => try!(row.set_null(column_idx)),
         };
     };
     Ok(())
