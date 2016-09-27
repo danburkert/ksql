@@ -12,6 +12,6 @@ docopt = "0.6"
 itertools = "0.4"
 kudu = { git = "https://github.com/danburkert/kudu-rs" }
 libc = "0.2"
-linenoise-rust = "0.1"
 rustc-serialize = "0.3"
+rustyline = "1.0"
 term = "0.4"

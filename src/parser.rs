@@ -55,7 +55,7 @@ pub enum ParseResult<'a, T> {
 
     /// An incomplete parse including a hint and the remaining unparsed input
     /// for each parse attempt.
-    Incomplete(Vec<(Hint<'a>, &'a str)>),
+    Incomplete(Vec<Hint<'a>>, &'a str),
 
     /// A parse error, including the expected input as hints, and the remaining
     /// unparsed input.
@@ -231,24 +231,25 @@ where P1: Parser<'a, Output=T>,
             ParseResult::Ok(t, remaining) => {
                 ParseResult::Ok(t, remaining)
             },
-            ParseResult::Incomplete(mut hints1) => {
+            ParseResult::Incomplete(mut hints1, remaining1) => {
                 match self.1.parse(input) {
-                    ParseResult::Ok(t, remaining) => {
-                        ParseResult::Ok(t, remaining)
+                    ParseResult::Ok(t, remaining2) => {
+                        ParseResult::Ok(t, remaining2)
                     },
-                    ParseResult::Incomplete(hints2) => {
+                    ParseResult::Incomplete(hints2, remaining2) => {
+                        assert_eq!(remaining1, remaining2);
                         hints1.extend_from_slice(&hints2);
-                        ParseResult::Incomplete(hints1)
+                        ParseResult::Incomplete(hints1, remaining1)
                     },
                     ParseResult::Err(..) => {
-                        ParseResult::Incomplete(hints1)
+                        ParseResult::Incomplete(hints1, remaining1)
                     },
                 }
             },
             ParseResult::Err(mut error1, remaining1) => {
                 match self.1.parse(input) {
-                    ParseResult::Ok(t, remaining) => ParseResult::Ok(t, remaining),
-                    ParseResult::Incomplete(hints2) => ParseResult::Incomplete(hints2),
+                    ParseResult::Ok(t, remaining2) => ParseResult::Ok(t, remaining2),
+                    ParseResult::Incomplete(hints, remaining2) => ParseResult::Incomplete(hints, remaining2),
                     ParseResult::Err(error2, remaining2) => {
                         // Both parses errored. Return the error result for the
                         // parse which made the most progress.
@@ -319,7 +320,7 @@ impl <'a, F> Parser<'a> for TakeWhile1<F> where F: Fn(char) -> bool {
         let mut char_indices = input.char_indices();
 
         match char_indices.next() {
-            None => return ParseResult::Incomplete(vec![(self.1, input)]),
+            None => return ParseResult::Incomplete(vec![self.1], input),
             Some((_, c)) if !self.0(c) => return ParseResult::Err(vec![self.1], input),
             _ => (),
         }
@@ -372,9 +373,9 @@ where P: Parser<'a, Output=T> {
         if let ParseResult::Ok(_, remaining1) = Chomp1.parse(input) {
             match self.0.parse(remaining1) {
                 ParseResult::Ok(v, remaining2) => ParseResult::Ok(Some(v), remaining2),
-                ParseResult::Incomplete(hints) => {
-                    if hints.iter().any(|hint| hint.1.len() < remaining1.len()) {
-                        ParseResult::Incomplete(hints)
+                ParseResult::Incomplete(hints, remaining2) => {
+                    if remaining2.len() < remaining1.len() {
+                        ParseResult::Incomplete(hints, remaining2)
                     } else {
                         ParseResult::Ok(None, input)
                     }
@@ -418,7 +419,7 @@ impl <'a> Parser<'a> for Tag {
             let (parsed, remaining) = input.split_at(len);
             ParseResult::Ok(parsed, remaining)
         } else {
-            ParseResult::Incomplete(vec![(Hint::Constant(self.0), input)])
+            ParseResult::Incomplete(vec![Hint::Constant(self.0)], input)
         }
     }
 }
@@ -428,7 +429,7 @@ impl <'a> Parser<'a> for Char {
     type Output = char;
     fn parse(&self, input: &'a str) -> ParseResult<'a, char> {
         match input.chars().next() {
-            None => ParseResult::Incomplete(vec![(Hint::Constant(self.1), input)]),
+            None => ParseResult::Incomplete(vec![Hint::Constant(self.1)], input),
             Some(c) if c == self.0 => ParseResult::Ok(self.0, &input[1..]),
             _ => ParseResult::Err(vec![Hint::Constant(self.1)], input),
         }
@@ -440,7 +441,7 @@ impl <'a> Parser<'a> for U32 {
     type Output = u32;
     fn parse(&self, input: &'a str) -> ParseResult<'a, u32> {
         if input.is_empty() {
-            return ParseResult::Incomplete(vec![(Hint::PosInteger, input)]);
+            return ParseResult::Incomplete(vec![Hint::PosInteger], input);
         }
 
         let mut idx = 0;
@@ -490,7 +491,7 @@ impl <'a> Parser<'a> for Keyword {
             let (parsed, remaining) = input.split_at(len);
             ParseResult::Ok(parsed, remaining)
         } else {
-            ParseResult::Incomplete(vec![(Hint::Constant(&self.0[len..]), &input[len..])])
+            ParseResult::Incomplete(vec![Hint::Constant(&self.0[len..])], &input[len..])
         }
     }
 }
@@ -510,7 +511,7 @@ impl <'a> Parser<'a> for BlockComment {
             let (parsed, remaining) = input.split_at(idx + 4);
             ParseResult::Ok(parsed, remaining)
         } else {
-            ParseResult::Incomplete(vec![(Hint::Constant("*/"), remaining)])
+            ParseResult::Incomplete(vec![Hint::Constant("*/")], remaining)
         }
     }
 }
@@ -551,9 +552,9 @@ impl <'a> Parser<'a> for TokenDelimiter {
                                                             .or_else(BlockComment)
                                                             .parse(input) {
             ParseResult::Ok(value, remaining) => ParseResult::Ok(value, remaining),
-            ParseResult::Incomplete(mut hints) => {
+            ParseResult::Incomplete(mut hints, remaining) => {
                 hints.truncate(1);
-                ParseResult::Incomplete(hints)
+                ParseResult::Incomplete(hints, remaining)
             },
             ParseResult::Err(mut hints, remaining) => {
                 hints.truncate(1);
@@ -603,12 +604,12 @@ impl <'a> Parser<'a> for TableName {
         match TakeWhile1(is_identifier_char, Hint::Table("")).parse(input) {
             ParseResult::Ok(identifier, remaining) => {
                 if remaining.is_empty() {
-                    ParseResult::Incomplete(vec![(Hint::Table(identifier), input)])
+                    ParseResult::Incomplete(vec![Hint::Table(identifier)], input)
                 } else {
                     ParseResult::Ok(identifier, remaining)
                 }
             }
-            ParseResult::Incomplete(hints) => ParseResult::Incomplete(hints),
+            ParseResult::Incomplete(hints, remaining) => ParseResult::Incomplete(hints, remaining),
             ParseResult::Err(hints, remaining) => ParseResult::Err(hints, remaining),
         }
     }
@@ -624,12 +625,12 @@ impl <'a> Parser<'a> for ColumnName {
         match TakeWhile1(is_identifier_char, Hint::Column("")).parse(input) {
             ParseResult::Ok(identifier, remaining) => {
                 if remaining.is_empty() {
-                    ParseResult::Incomplete(vec![(Hint::Column(identifier), input)])
+                    ParseResult::Incomplete(vec![Hint::Column(identifier)], input)
                 } else {
                     ParseResult::Ok(identifier, remaining)
                 }
             }
-            ParseResult::Incomplete(hints) => ParseResult::Incomplete(hints),
+            ParseResult::Incomplete(hints, remaining) => ParseResult::Incomplete(hints, remaining),
             ParseResult::Err(hints, remaining) => ParseResult::Err(hints, remaining),
         }
     }
@@ -652,7 +653,7 @@ impl <'a> Parser<'a> for IntLiteral {
         let remaining = match Optional(Char('-', "")).and_then(TakeWhile1(is_numeric, Hint::Integer))
                                                      .parse(input) {
             ParseResult::Ok(_, remaining) => remaining,
-            ParseResult::Incomplete(..) => return ParseResult::Incomplete(vec![(Hint::Integer, input)]),
+            ParseResult::Incomplete(..) => return ParseResult::Incomplete(vec![Hint::Integer], input),
             ParseResult::Err(..) => return ParseResult::Err(vec![Hint::Integer], input),
         };
 
@@ -668,14 +669,14 @@ struct FloatLiteral;
 impl <'a> Parser<'a> for FloatLiteral {
     type Output = f64;
     fn parse(&self, input: &'a str) -> ParseResult<'a, f64> {
-        if input.is_empty() { return ParseResult::Incomplete(vec![(Hint::Float, input)]); }
+        if input.is_empty() { return ParseResult::Incomplete(vec![Hint::Float], input); }
         let remaining = match Optional(Char('-', ""))
                                 .and_then(TakeWhile0(is_numeric))
                                 .and_then(Char('.', "").and_then(TakeWhile0(is_numeric)))
                                 .and_then(Optional(Char('e', "").and_then(Optional(IntLiteral))))
                                 .parse(input) {
             ParseResult::Ok(_, remaining) => remaining,
-            ParseResult::Incomplete(..) => return ParseResult::Incomplete(vec![(Hint::Float, input)]),
+            ParseResult::Incomplete(..) => return ParseResult::Incomplete(vec![Hint::Float], input),
             ParseResult::Err(..) => return ParseResult::Err(vec![Hint::Float], input),
         };
 
@@ -697,7 +698,7 @@ impl <'a> Parser<'a> for TimestampLiteral {
         // or
         // 1996-12-19T16:39:57-08:00
 
-        if input.is_empty() { return ParseResult::Incomplete(vec![(Hint::Timestamp, input)]); }
+        if input.is_empty() { return ParseResult::Incomplete(vec![Hint::Timestamp], input); }
         let remaining = match TakeWhile1(is_numeric, Hint::Constant(""))
                                  .and_then(Char('-', ""))
                                  .and_then(TakeWhile1(is_numeric, Hint::Constant("")))
@@ -715,7 +716,7 @@ impl <'a> Parser<'a> for TimestampLiteral {
                                                                               .followed_by(TakeWhile1(is_numeric, Hint::Constant("")))))
                                  .parse(input) {
             ParseResult::Ok(_, remaining) => remaining,
-            ParseResult::Incomplete(..) => return ParseResult::Incomplete(vec![(Hint::Timestamp, input)]),
+            ParseResult::Incomplete(..) => return ParseResult::Incomplete(vec![Hint::Timestamp], input),
             ParseResult::Err(..) => return ParseResult::Err(vec![Hint::Timestamp], input),
         };
 
@@ -732,7 +733,7 @@ struct DoubleQuotedStringLiteral;
 impl <'a> Parser<'a> for DoubleQuotedStringLiteral {
     type Output = Cow<'a, str>;
     fn parse(&self, input: &'a str) -> ParseResult<'a, Cow<'a, str>> {
-        if input.is_empty() { return ParseResult::Incomplete(vec![(Hint::Constant("\""), input)]) };
+        if input.is_empty() { return ParseResult::Incomplete(vec![Hint::Constant("\"")], input) };
         if &input[0..1] != "\"" { return ParseResult::Err(vec![Hint::Constant("\"")], input); }
 
         let mut escape_idx = None;
@@ -772,7 +773,7 @@ impl <'a> Parser<'a> for DoubleQuotedStringLiteral {
                 }
             }
         }
-        ParseResult::Incomplete(vec![(Hint::Constant("\""), "")])
+        ParseResult::Incomplete(vec![Hint::Constant("\"")], "")
     }
 }
 
@@ -793,7 +794,7 @@ impl <'a> Parser<'a> for HexLiteral {
         let bytes = remaining.as_bytes();
 
         if bytes.is_empty() {
-            return ParseResult::Incomplete(vec![(Hint::HexEscape, "")]);
+            return ParseResult::Incomplete(vec![Hint::HexEscape], "");
         }
 
         let mut result = Vec::new();
@@ -812,7 +813,7 @@ impl <'a> Parser<'a> for HexLiteral {
                 }
             } else {
                 if char_to_byte(chunk[0]).is_some() {
-                    return ParseResult::Incomplete(vec![(Hint::HexEscape, rest)]);
+                    return ParseResult::Incomplete(vec![Hint::HexEscape], rest);
                 } else if idx == 0 {
                     return ParseResult::Err(vec![Hint::HexEscape], rest);
                 } else {
@@ -885,7 +886,7 @@ impl <'a> Parser<'a> for Noop {
             ParseResult::Ok(_, remaining) => ParseResult::Ok(command::Command::Noop, remaining),
             ParseResult::Incomplete(..) => {
                 assert!(input.is_empty());
-                ParseResult::Incomplete(vec![])
+                ParseResult::Incomplete(vec![], input)
             },
             ParseResult::Err(err, remaining) => ParseResult::Err(err, remaining),
         }

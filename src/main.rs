@@ -3,8 +3,8 @@ extern crate docopt;
 extern crate itertools;
 extern crate kudu;
 extern crate libc;
-extern crate linenoise;
 extern crate rustc_serialize;
+extern crate rustyline;
 extern crate term;
 
 /// Returns the result of a parse if not successful, otherwise returns the value
@@ -12,8 +12,8 @@ extern crate term;
 macro_rules! try_parse {
     ($e:expr) => (match $e {
         $crate::parser::ParseResult::Ok(t, remaining) => (t, remaining),
-        $crate::parser::ParseResult::Incomplete(hints) =>
-            return $crate::parser::ParseResult::Incomplete(hints),
+        $crate::parser::ParseResult::Incomplete(hints, remaining) =>
+            return $crate::parser::ParseResult::Incomplete(hints, remaining),
         $crate::parser::ParseResult::Err(err, remaining) =>
             return $crate::parser::ParseResult::Err(err, remaining),
     });
@@ -23,7 +23,10 @@ mod command;
 mod parser;
 mod terminal;
 
+use std::borrow::Cow;
+use std::cell::RefCell;
 use std::net::{IpAddr, SocketAddr, ToSocketAddrs};
+use std::rc::Rc;
 use std::str::FromStr;
 
 use docopt::Docopt;
@@ -128,6 +131,10 @@ struct Args {
 }
 
 fn main() {
+    let _ = run();
+}
+
+fn run() -> rustyline::Result<()> {
     let args: Args = Docopt::new(USAGE)
                             .and_then(|d| d.decode())
                             .unwrap_or_else(|e| e.exit());
@@ -140,41 +147,38 @@ fn main() {
         kudu::Client::new(config)
     };
 
-    linenoise::set_callback(callback);
-    linenoise::set_multiline(1);
+    let previous_lines = Rc::new(RefCell::new(String::new()));
 
-    let mut input: Option<String> = None;
+    let mut readline = rustyline::Editor::new();
+    readline.set_completer(Some(SqlCompleter(previous_lines.clone())));
+
     loop {
-        match input {
-            Some(ref mut input) => match linenoise::input("") {
-                Some(ref line) => {
-                    input.push(' ');
-                    input.push_str(&line)
-                },
-                None => break,
-            },
-            None => input = linenoise::input("kudu> "),
+
+        if previous_lines.borrow().is_empty() {
+            let line = try!(readline.readline("kudu> "));
+            *previous_lines.borrow_mut() = line;
+        } else {
+            let line = try!(readline.readline(""));
+            previous_lines.borrow_mut().push('\n');
+            previous_lines.borrow_mut().push_str(&line);
         }
-        match input {
-            None => { break }
-            Some(ref input) => {
-                match Commands1.parse(&input) {
-                    ParseResult::Ok(commands, remaining) => {
-                        linenoise::history_add(&input);
-                        assert!(remaining.is_empty());
-                        for command in commands {
-                            command.execute(&client, &mut term);
-                        }
-                    },
-                    ParseResult::Err(hints, remaining) => {
-                        linenoise::history_add(&input);
-                        term.print_parse_error(&input, remaining, &hints);
-                    },
-                    _ => continue,
+
+        let mut text = previous_lines.borrow_mut();
+
+        match Commands1.parse(&text) {
+            ParseResult::Ok(commands, remaining) => {
+                assert!(remaining.is_empty());
+                for command in commands {
+                    command.execute(&client, &mut term);
                 }
             },
+            ParseResult::Err(hints, remaining) => {
+                term.print_parse_error(&text, remaining, &hints);
+            },
+            _ => continue,
         }
-        input = None;
+        readline.add_history_entry(&text);
+        text.clear();
     }
 }
 
@@ -200,20 +204,36 @@ fn resolve_master(input: &str) -> SocketAddr {
     panic!("Unable to resolve master address '{}'", input);
 }
 
-fn callback(input: &str) -> Vec<String> {
-    // TODO: this can currently return duplicate hints
-    let mut completions = Vec::new();
-    match parser::Command.parse(input) {
-        parser::ParseResult::Incomplete(hints) => {
-            for &(hint, remaining) in hints.iter() {
-                let parsed = &input[..input.len() - remaining.len()];
-                match hint {
-                    parser::Hint::Constant(hint) => completions.push(format!("{}{}", parsed, hint)),
-                    _ => (),
-                }
-            }
-        },
-        _ => (),
+struct SqlCompleter(Rc<RefCell<String>>);
+impl rustyline::completion::Completer for SqlCompleter {
+    fn complete(&self, line: &str, pos: usize) -> rustyline::Result<(usize, Vec<String>)> {
+        let line = &line[..pos];
+        let previous_lines = self.0.borrow();
+        let text = if previous_lines.is_empty() {
+            Cow::Borrowed(line)
+        } else {
+            let mut text = previous_lines.to_owned();
+            text.push_str(line);
+            Cow::Owned(text)
+        };
+
+        let (pos, mut hints) = match parser::Commands1.parse(&text) {
+            parser::ParseResult::Incomplete(hints, remaining) => {
+                let pos = line.len() - remaining.len();
+                let hints = hints.into_iter().filter_map(|hint| {
+                    match hint {
+                        parser::Hint::Constant(s) => Some(s.to_owned()),
+                        _ => None,
+                    }
+                }).collect();
+                (pos, hints)
+            },
+            _ => (0, vec![]),
+        };
+
+        hints.sort();
+        hints.dedup();
+
+        Ok((pos, hints))
     }
-    completions
 }
