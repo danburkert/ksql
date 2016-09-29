@@ -6,6 +6,7 @@ extern crate libc;
 extern crate rustc_serialize;
 extern crate rustyline;
 extern crate term;
+extern crate xdg_basedir as xdg;
 
 /// Returns the result of a parse if not successful, otherwise returns the value
 /// and remaining input.
@@ -25,6 +26,7 @@ mod terminal;
 
 use std::borrow::Cow;
 use std::cell::RefCell;
+use std::fs;
 use std::net::{IpAddr, SocketAddr, ToSocketAddrs};
 use std::rc::Rc;
 use std::str::FromStr;
@@ -131,10 +133,6 @@ struct Args {
 }
 
 fn main() {
-    let _ = run();
-}
-
-fn run() -> rustyline::Result<()> {
     let args: Args = Docopt::new(USAGE)
                             .and_then(|d| d.decode())
                             .unwrap_or_else(|e| e.exit());
@@ -150,15 +148,26 @@ fn run() -> rustyline::Result<()> {
     let previous_lines = Rc::new(RefCell::new(String::new()));
 
     let mut readline = rustyline::Editor::new();
+
+    let mut history_path = xdg::get_cache_home().unwrap();
+    history_path.push("kudusql");
+    history_path.push("history");
+    let _ = readline.load_history(&history_path);
+
     readline.set_completer(Some(SqlCompleter(previous_lines.clone())));
 
     loop {
-
         if previous_lines.borrow().is_empty() {
-            let line = try!(readline.readline("kudu> "));
+            let line = match readline.readline("kudu> ") {
+                Ok(line) => line,
+                _ => break,
+            };
             *previous_lines.borrow_mut() = line;
         } else {
-            let line = try!(readline.readline(""));
+            let line = match readline.readline("") {
+                Ok(line) => line,
+                _ => break,
+            };
             previous_lines.borrow_mut().push('\n');
             previous_lines.borrow_mut().push_str(&line);
         }
@@ -177,8 +186,17 @@ fn run() -> rustyline::Result<()> {
             },
             _ => continue,
         }
+
         readline.add_history_entry(&text);
         text.clear();
+    }
+
+    // Combinators don't work because of rustyline's error type.
+    match fs::create_dir_all(history_path.parent().unwrap()) {
+        Ok(_) => if let Err(error) = readline.save_history(&history_path) {
+            term.print_warning(&format!("unable to save history: {:?}", error));
+        },
+        Err(error) => term.print_warning(&format!("unable to save history: {:?}", error)),
     }
 }
 

@@ -160,6 +160,13 @@ impl Terminal {
         writeln!(&mut self.out, "").unwrap();
     }
 
+    pub fn print_warning(&mut self, msg: &str) {
+        self.red();
+        write!(self.err, "warning: ").unwrap();
+        self.reset();
+        writeln!(self.err, "{}", msg).unwrap();
+    }
+
     pub fn print_help(&mut self) {
         writeln!(&mut self.out, "{}", HELP).unwrap();
         writeln!(&mut self.out, "").unwrap();
