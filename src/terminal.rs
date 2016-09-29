@@ -109,9 +109,10 @@ impl Terminal {
         let error_idx = input.len() - remaining.len();
         assert_eq!(&input[error_idx..], remaining);
         if !input.is_empty() {
+            let mut line_end_idx = 0;
             for line in input.lines() {
-
-                if line.len() >= error_idx {
+                line_end_idx += 1 + line.len();
+                if line_end_idx >= error_idx {
                     self.red();
                     write!(self.err, "error: ").unwrap();
                     self.reset();
@@ -136,7 +137,8 @@ impl Terminal {
 
                     let word_len = input[error_idx..].split_whitespace().next().unwrap_or("").len();
                     writeln!(self.err, "{}", line).unwrap();
-                    writeln!(self.err, "{:>2$}{:~<3$}", "", "^", error_idx, word_len).unwrap();
+                    let arrow_idx = line.len() + 1 + error_idx - line_end_idx;
+                    writeln!(self.err, "{:>2$}{:~<3$}", "", "^", arrow_idx, word_len).unwrap();
                     break;
                 }
             }
