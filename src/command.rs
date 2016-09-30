@@ -69,8 +69,8 @@ pub enum Command<'a> {
         selector: Selector<'a>,
     },
 
-    /// CREATE TABLE <table> (<col> <data-type> [NULLABLE | NOT NULL] [ENCODING <encoding>] [COMPRESSION <compression>] [BLOCK SIZE <block-size>], ..)
-    /// PRIMARY KEY (<col>, ..)
+    /// CREATE TABLE <table> (<col> <data-type> [NOT NULL] [PRIMARY KEY] [ENCODING <encoding>] [COMPRESSION <compression>] [BLOCK SIZE <block-size>], ..,
+    /// PRIMARY KEY (<col>, ..))
     /// [DISTRIBUTE BY [RANGE (<col>, ..) [SPLIT ROWS (<col-val>, ..)[, (<col-val>, ..)..]]]
     ///                [HASH (<col>, ..) [WITH SEED <seed>] INTO <buckets> BUCKETS]..;
     CreateTable {
@@ -191,13 +191,20 @@ impl <'a> Command<'a> {
 
 fn create_table<'a>(client: &kudu::Client,
                     name: &str,
-                    columns: Vec<ColumnSpec>,
+                    mut columns: Vec<ColumnSpec>,
                     primary_key: Vec<&str>,
                     range_partition: Option<RangePartition<'a>>,
                     hash_partitions: Vec<HashPartition>,
                     replicas: Option<u32>)
                     -> kudu::Result<()> {
     let mut schema = kudu::SchemaBuilder::new();
+
+    for column_name in &primary_key {
+        if let Some(mut column) = columns.iter_mut().find(|column| &column.name() == column_name) {
+            column.not_null = true;
+        }
+    }
+
     for column in columns {
         schema.add_column_by_ref(column.into_column());
     }
@@ -230,6 +237,8 @@ fn create_table<'a>(client: &kudu::Client,
             table_builder.add_range_partition(kudu::RangePartitionBound::Inclusive(lower_bound),
                                               kudu::RangePartitionBound::Exclusive(upper_bound));
         }
+    } else {
+        table_builder.set_range_partition_columns(Vec::<String>::new());
     }
 
     for hash_partition in hash_partitions {
@@ -502,7 +511,7 @@ fn build_rows(schema: &kudu::Schema,
 pub struct ColumnSpec<'a> {
     name: &'a str,
     data_type: kudu::DataType,
-    nullable: Option<bool>,
+    not_null: bool,
     encoding_type: Option<kudu::EncodingType>,
     compression_type: Option<kudu::CompressionType>,
     block_size: Option<u32>,
@@ -511,7 +520,7 @@ pub struct ColumnSpec<'a> {
 impl <'a> ColumnSpec<'a> {
     pub fn new(name: &'a str,
                data_type: kudu::DataType,
-               nullable: Option<bool>,
+               not_null: bool,
                encoding_type: Option<kudu::EncodingType>,
                compression_type: Option<kudu::CompressionType>,
                block_size: Option<u32>)
@@ -519,16 +528,20 @@ impl <'a> ColumnSpec<'a> {
         ColumnSpec {
             name: name,
             data_type: data_type,
-            nullable: nullable,
+            not_null: not_null,
             encoding_type: encoding_type,
             compression_type: compression_type,
             block_size: block_size,
         }
     }
 
+    pub fn name(&self) -> &'a str {
+        self.name
+    }
+
     pub fn into_column(&self) -> kudu::Column {
         let mut column = kudu::Column::builder(self.name, self.data_type);
-        if let Some(false) = self.nullable {
+        if self.not_null {
             column.set_not_null_by_ref();
         }
         if let Some(encoding_type) = self.encoding_type {

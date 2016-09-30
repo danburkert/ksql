@@ -66,11 +66,12 @@ Commands:
     DROP TABLE <table>;
         Delete the table.
 
-    CREATE TABLE <table> (<col> <data-type> [NULLABLE | NOT NULL]
-                                            [ENCODING <encoding>]
-                                            [COMPRESSION <compression>]
-                                            [BLOCK SIZE <block-size>], ..)
-    PRIMARY KEY (<col>, ..)
+    CREATE TABLE <table> (
+        <col> <data-type> [NOT NULL] [PRIMARY KEY] [ENCODING <encoding>]
+                          [COMPRESSION <compression>] [BLOCK SIZE <block-size>],
+        ..,
+        [PRIMARY KEY (<col>, ..)],
+    )
     DISTRIBUTE BY [RANGE (<col>, ..) [SPLIT ROWS (<col-val>, ..)[, ..]]
                                      [BOUNDS ((<col-val>, ..), (<col-val>, ..))[, ..]]
                   [HASH (<col>, ..) [WITH SEED <seed>] INTO <buckets> BUCKETS]..

@@ -62,6 +62,18 @@ pub enum ParseResult<'a, T> {
     Err(Vec<Hint<'a>>, &'a str),
 }
 
+impl <'a, T> ParseResult<'a, T> {
+
+    fn map<U, F>(self, f: F) -> ParseResult<'a, U> where F: FnOnce(T) -> U {
+        match self {
+            ParseResult::Ok(value, remaining) => ParseResult::Ok(f(value), remaining),
+            ParseResult::Incomplete(hints, remaining) => ParseResult::Incomplete(hints, remaining),
+            ParseResult::Err(hints, remaining) => ParseResult::Err(hints, remaining),
+        }
+    }
+
+}
+
 /// A standard interface for parsers.
 ///
 /// Provides parser combinators.
@@ -231,41 +243,45 @@ where P1: Parser<'a, Output=T>,
             ParseResult::Ok(t, remaining) => {
                 ParseResult::Ok(t, remaining)
             },
-            ParseResult::Incomplete(mut hints1, remaining1) => {
-                match self.1.parse(input) {
-                    ParseResult::Ok(t, remaining2) => {
-                        ParseResult::Ok(t, remaining2)
-                    },
-                    ParseResult::Incomplete(hints2, remaining2) => {
-                        assert_eq!(remaining1, remaining2);
-                        hints1.extend_from_slice(&hints2);
-                        ParseResult::Incomplete(hints1, remaining1)
-                    },
-                    ParseResult::Err(..) => {
-                        ParseResult::Incomplete(hints1, remaining1)
-                    },
-                }
-            },
-            ParseResult::Err(mut error1, remaining1) => {
-                match self.1.parse(input) {
-                    ParseResult::Ok(t, remaining2) => ParseResult::Ok(t, remaining2),
-                    ParseResult::Incomplete(hints, remaining2) => ParseResult::Incomplete(hints, remaining2),
-                    ParseResult::Err(error2, remaining2) => {
-                        // Both parses errored. Return the error result for the
-                        // parse which made the most progress.
-                        if remaining1.len() == remaining2.len() {
-                            debug_assert!(remaining1 == remaining2);
-                            error1.extend_from_slice(&error2);
-                            ParseResult::Err(error1, remaining1)
-                        } else if remaining1.len() < remaining2.len() {
-                            ParseResult::Err(error1, remaining1)
-                        } else {
-                            ParseResult::Err(error2, remaining2)
-                        }
-                    },
-                }
-            },
+            result => reduce_results(result, self.1.parse(input)),
         }
+    }
+}
+
+/// Reduces two parse results into one. Both parses must be of the same text, and only one may
+/// succeed. If both fail, the parse that made the most progress takes precedent, with ties going
+/// to the incomplete parse. If both parses have the same failure type and make the same amount of
+/// progress, the hints are combined.
+fn reduce_results<'a, T>(res1: ParseResult<'a, T>, res2: ParseResult<'a, T>) -> ParseResult<'a, T> {
+    use self::ParseResult::{Ok, Incomplete, Err};
+    match (res1, res2) {
+        (Ok(_, _), Ok(_, _)) => panic!("ambiguous parse"),
+        (res@Ok(_, _), _) => res,
+        (_, res@Ok(_, _)) => res,
+        (Incomplete(mut hints1, rem1), Incomplete(hints2, rem2)) => {
+            if rem1.len() == rem2.len() {
+                debug_assert_eq!(rem1, rem2);
+                hints1.extend_from_slice(&hints2);
+                Incomplete(hints1, rem1)
+            } else if rem1.len() < rem2.len() {
+                Incomplete(hints1, rem1)
+            } else {
+                Incomplete(hints2, rem2)
+            }
+        },
+        (Err(mut hints1, rem1), Err(hints2, rem2)) => {
+            if rem1.len() == rem2.len() {
+                debug_assert_eq!(rem1, rem2);
+                hints1.extend_from_slice(&hints2);
+                Err(hints1, rem1)
+            } else if rem1.len() < rem2.len() {
+                Err(hints1, rem1)
+            } else {
+                Err(hints2, rem2)
+            }
+        },
+        (res@Incomplete(_, _), _) => res,
+        (_, res@Incomplete(_, _)) => res,
     }
 }
 
@@ -1104,37 +1120,105 @@ impl <'a> Parser<'a> for BlockSize {
     }
 }
 
-struct Nullable;
-impl <'a> Parser<'a> for Nullable {
-    type Output = bool;
-    fn parse(&self, input: &'a str) -> ParseResult<'a, bool> {
-        Keyword("NULLABLE").map(|_| true)
-                           .or_else(Keyword("NOT").and_then(Chomp1)
-                                                  .and_then(Keyword("NULL"))
-                                                  .map(|_| false))
-                           .parse(input)
-    }
-}
-
-struct ColumnSpec;
+struct ColumnSpec(bool);
 impl <'a> Parser<'a> for ColumnSpec {
-    type Output = command::ColumnSpec<'a>;
-    fn parse(&self, input: &'a str) -> ParseResult<'a, command::ColumnSpec<'a>> {
+    type Output = (command::ColumnSpec<'a>, bool);
+    fn parse(&self, input: &'a str) -> ParseResult<'a, (command::ColumnSpec<'a>, bool)> {
         let (name, remaining) = try_parse!(ColumnName.parse(input));
         let (data_type, remaining) = try_parse!(Chomp1.and_then(DataType).parse(remaining));
 
-        let (nullable, remaining) = try_parse!(OptionalClause(Nullable).parse(remaining));
-        let (encoding_type, remaining) = try_parse!(OptionalClause(EncodingType).parse(remaining));
-        let (compression_type, remaining) = try_parse!(OptionalClause(CompressionType).parse(remaining));
-        let (block_size, remaining) = try_parse!(OptionalClause(BlockSize).parse(remaining));
+        let mut primary_key = false;
+        let mut nullable = false;
+        let mut encoding_type = None;
+        let mut compression_type = None;
+        let mut block_size = None;
 
-        ParseResult::Ok(command::ColumnSpec::new(name,
-                                                 data_type,
-                                                 nullable,
-                                                 encoding_type,
-                                                 compression_type,
-                                                 block_size),
-                        remaining)
+        let mut remaining = remaining;
+
+        use self::ParseResult::{Ok, Incomplete, Err};
+
+        let mut failed_results: Vec<ParseResult<()>> = Vec::new();
+        loop {
+            failed_results.clear();
+
+            match Chomp0.and_then(Char(',', ",").or_else(Char(')', ")"))).parse(remaining) {
+                Ok(_, _) => break,
+                _ => (),
+            }
+
+            if self.0 && !primary_key {
+                match Chomp1.and_then(Keyword("PRIMARY")).and_then(Chomp1).and_then(Keyword("KEY")).parse(remaining) {
+                    Ok(_, rem) => {
+                        remaining = rem;
+                        primary_key = true;
+                        continue;
+                    },
+                    Incomplete(hints, rem) => failed_results.push(Incomplete(hints, rem)),
+                    Err(hints, rem) => failed_results.push(Err(hints, rem)),
+                }
+            }
+
+            if !nullable {
+                match Chomp1.and_then(Keyword("NOT")).and_then(Chomp1).and_then(Keyword("NULL")).parse(remaining) {
+                    Ok(_, rem) => {
+                        remaining = rem;
+                        nullable = true;
+                        continue;
+                    },
+                    Incomplete(hints, rem) => failed_results.push(Incomplete(hints, rem)),
+                    Err(hints, rem) => failed_results.push(Err(hints, rem)),
+                }
+            }
+
+            if encoding_type.is_none() {
+                match Chomp1.and_then(EncodingType).parse(remaining) {
+                    Ok(enc_type, rem) => {
+                        remaining = rem;
+                        encoding_type = Some(enc_type);
+                        continue;
+                    },
+                    Incomplete(hints, rem) => failed_results.push(Incomplete(hints, rem)),
+                    Err(hints, rem) => failed_results.push(Err(hints, rem)),
+                }
+            }
+
+            if compression_type.is_none() {
+                match Chomp1.and_then(CompressionType).parse(remaining) {
+                    Ok(enc_type, rem) => {
+                        remaining = rem;
+                        compression_type = Some(enc_type);
+                        continue;
+                    },
+                    Incomplete(hints, rem) => failed_results.push(Incomplete(hints, rem)),
+                    Err(hints, rem) => failed_results.push(Err(hints, rem)),
+                }
+            }
+
+            if block_size.is_none() {
+                match Chomp1.and_then(BlockSize).parse(remaining) {
+                    ParseResult::Ok(blk_size, rem) => {
+                        remaining = rem;
+                        block_size = Some(blk_size);
+                        continue;
+                    },
+                    Incomplete(hints, rem) => failed_results.push(Incomplete(hints, rem)),
+                    Err(hints, rem) => failed_results.push(Err(hints, rem)),
+                }
+            }
+
+            if failed_results.is_empty() { break; }
+
+            let zero = Incomplete(Vec::new(), remaining);
+            return failed_results.drain(..).fold(zero, reduce_results).map(|_| unreachable!());
+        }
+
+        let column_spec = command::ColumnSpec::new(name,
+                                                   data_type,
+                                                   nullable,
+                                                   encoding_type,
+                                                   compression_type,
+                                                   block_size);
+        ParseResult::Ok((column_spec, primary_key), remaining)
     }
 }
 
@@ -1275,23 +1359,26 @@ impl <'a> Parser<'a> for CreateTable {
         let mut primary_key = None;
 
         enum ColumnClause<'b> {
-            Column(command::ColumnSpec<'b>),
+            Column(command::ColumnSpec<'b>, bool),
             PrimaryKey(Vec<&'b str>),
         }
 
         loop {
             if primary_key.is_none() {
-                let column_clause = OrElse(ColumnSpec.map(|spec| ColumnClause::Column(spec)),
-                                        PrimaryKey.map(|pk| ColumnClause::PrimaryKey(pk)));
+                let column_clause = OrElse(ColumnSpec(true).map(|(spec, pk)| ColumnClause::Column(spec, pk)),
+                                           PrimaryKey.map(|pk| ColumnClause::PrimaryKey(pk)));
 
                 let (clause, rem) = try_parse!(Chomp0.and_then(column_clause).parse(remaining));
                 match clause {
-                    ColumnClause::Column(column) => columns.push(column),
+                    ColumnClause::Column(col, pk) => {
+                        if pk { primary_key = Some(vec![col.name()]); }
+                        columns.push(col);
+                    },
                     ColumnClause::PrimaryKey(pk) => primary_key = Some(pk),
                 }
                 remaining = rem;
             } else {
-                let (col, rem) = try_parse!(Chomp0.and_then(ColumnSpec).parse(remaining));
+                let ((col, _), rem) = try_parse!(Chomp0.and_then(ColumnSpec(false)).parse(remaining));
                 remaining = rem;
                 columns.push(col);
             }
@@ -1308,7 +1395,7 @@ impl <'a> Parser<'a> for CreateTable {
         }
 
         if columns.is_empty() {
-            try_parse!(Chomp0.and_then(ColumnSpec).parse(remaining));
+            try_parse!(Chomp0.and_then(ColumnSpec(true)).parse(remaining));
         }
         if primary_key.is_none() {
             try_parse!(Chomp0.and_then(PrimaryKey).parse(remaining));
@@ -1390,8 +1477,8 @@ impl <'a> Parser<'a> for AddColumn {
         Keyword("ADD").and_then(Chomp1)
                       .and_then(Keyword("COLUMN"))
                       .and_then(Chomp1)
-                      .and_then(ColumnSpec)
-                      .map(|column| command::AlterTableStep::AddColumn { column: column })
+                      .and_then(ColumnSpec(false))
+                      .map(|(column, _)| command::AlterTableStep::AddColumn { column: column })
                       .parse(input)
     }
 }
@@ -1832,7 +1919,7 @@ SELECT";
 
     #[test]
     fn test_create_column() {
-        let parser = ColumnSpec;
+        let parser = ColumnSpec(true);
         assert_eq!(parser.parse("foo int32"),
                    ParseResult::Ok(command::ColumnSpec::new("foo",
                                                             kudu::DataType::Int32,
