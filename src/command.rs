@@ -223,19 +223,10 @@ fn create_table<'a>(client: &kudu::Client,
             columns.push((index, schema.column(index).unwrap().data_type()));
         }
 
-        for range_split in &range_partition.split_rows {
-            let mut row = schema.new_row();
-            try!(populate_row(&mut row, &columns, range_split));
-            table_builder.add_range_partition_split(row);
-        }
-
-        for (ref lower, ref upper) in range_partition.bounds {
-            let mut lower_bound = schema.new_row();
-            let mut upper_bound = schema.new_row();
-            try!(populate_row(&mut lower_bound, &columns, lower));
-            try!(populate_row(&mut upper_bound, &columns, upper));
-            table_builder.add_range_partition(kudu::RangePartitionBound::Inclusive(lower_bound),
-                                              kudu::RangePartitionBound::Exclusive(upper_bound));
+        for (lower_bound, upper_bound) in range_partition.partitions {
+            let (lower_bound, upper_bound) =
+                try!(convert_bounds(&schema, &columns, lower_bound, upper_bound));
+            table_builder.add_range_partition(lower_bound, upper_bound);
         }
     } else {
         table_builder.set_range_partition_columns(Vec::<String>::new());
@@ -280,28 +271,53 @@ fn alter_table(client: &kudu::Client,
             AlterTableStep::DropColumn { column_name } => {
                 builder.drop_column_by_ref(column_name);
             },
-            AlterTableStep::AddRangePartition { lower_bound, upper_bound } => {
-                let mut lower = table.schema().new_row();
-                let mut upper = table.schema().new_row();
-                try!(populate_row(&mut lower, &columns, &lower_bound));
-                try!(populate_row(&mut upper, &columns, &upper_bound));
-                builder.add_range_partition_by_ref(&kudu::RangePartitionBound::Inclusive(lower),
-                                                   &kudu::RangePartitionBound::Exclusive(upper));
+            AlterTableStep::AddRangePartition(lower_bound, upper_bound) => {
+                let (lower_bound, upper_bound) =
+                    try!(convert_bounds(table.schema(), &columns, lower_bound, upper_bound));
+                builder.add_range_partition_by_ref(&lower_bound, &upper_bound);
             },
-            AlterTableStep::DropRangePartition { lower_bound, upper_bound } => {
-                let mut lower = table.schema().new_row();
-                let mut upper = table.schema().new_row();
-                try!(populate_row(&mut lower, &columns, &lower_bound));
-                try!(populate_row(&mut upper, &columns, &upper_bound));
-                builder.drop_range_partition_by_ref(&kudu::RangePartitionBound::Inclusive(lower),
-                                                    &kudu::RangePartitionBound::Exclusive(upper));
+            AlterTableStep::DropRangePartition(lower_bound, upper_bound) => {
+                let (lower_bound, upper_bound) =
+                    try!(convert_bounds(table.schema(), &columns, lower_bound, upper_bound));
+                builder.drop_range_partition_by_ref(&lower_bound, &upper_bound);
             },
         }
     }
 
     let table_id = try!(client.alter_table(table_name, builder, deadline()));
-    // TODO: this wait should use the table ID returned from the alter command
     client.wait_for_table_alteration_by_id(&table_id, deadline())
+}
+
+fn convert_bounds<'a>(schema: &kudu::Schema,
+                      columns: &[(usize, kudu::DataType)],
+                      lower_bound: Bound<'a>,
+                      upper_bound: Bound<'a>)
+                      -> kudu::Result<(kudu::RangePartitionBound, kudu::RangePartitionBound)> {
+    let mut lower = schema.new_row();
+    let lower_bound = match lower_bound {
+        Bound::Inclusive(values) => {
+            try!(populate_row(&mut lower, &columns, &values));
+            kudu::RangePartitionBound::Inclusive(lower)
+        },
+        Bound::Exclusive(values) => {
+            try!(populate_row(&mut lower, &columns, &values));
+            kudu::RangePartitionBound::Exclusive(lower)
+        },
+        Bound::Unbounded => kudu::RangePartitionBound::Exclusive(lower),
+    };
+    let mut upper = schema.new_row();
+    let upper_bound = match upper_bound {
+        Bound::Inclusive(values) => {
+            try!(populate_row(&mut upper, &columns, &values));
+            kudu::RangePartitionBound::Inclusive(upper)
+        },
+        Bound::Exclusive(values) => {
+            try!(populate_row(&mut upper, &columns, &values));
+            kudu::RangePartitionBound::Exclusive(upper)
+        },
+        Bound::Unbounded => kudu::RangePartitionBound::Exclusive(upper),
+    };
+    Ok((lower_bound, upper_bound))
 }
 
 /*
@@ -485,7 +501,6 @@ fn populate_row<'a>(row: &mut kudu::Row,
             (_, &Literal::Float(f)) => try!(row.set(column_idx, f)),
             (_, &Literal::String(ref s)) => try!(row.set(column_idx, &s[..])),
             (_, &Literal::Binary(ref b)) => try!(row.set(column_idx, &b[..])),
-            // TODO: add Row::set_null
             (_, &Literal::Null) => try!(row.set_null(column_idx)),
         };
     };
@@ -558,18 +573,23 @@ impl <'a> ColumnSpec<'a> {
 }
 
 #[derive(Debug, PartialEq)]
+pub enum Bound<'a> {
+    Inclusive(Vec<Literal<'a>>),
+    Exclusive(Vec<Literal<'a>>),
+    Unbounded,
+}
+
+#[derive(Debug, PartialEq)]
 pub struct RangePartition<'a> {
     columns: Vec<&'a str>,
-    split_rows: Vec<Vec<Literal<'a>>>,
-    bounds: Vec<(Vec<Literal<'a>>, Vec<Literal<'a>>)>,
+    partitions: Vec<(Bound<'a>, Bound<'a>)>,
 }
 
 impl <'a> RangePartition<'a> {
     pub fn new(columns: Vec<&'a str>,
-               split_rows: Vec<Vec<Literal<'a>>>,
-               bounds: Vec<(Vec<Literal<'a>>, Vec<Literal<'a>>)>)
+               partitions: Vec<(Bound<'a>, Bound<'a>)>)
                -> RangePartition<'a> {
-        RangePartition { columns: columns, split_rows: split_rows, bounds: bounds }
+        RangePartition { columns: columns, partitions: partitions }
     }
 }
 
@@ -601,14 +621,8 @@ pub enum AlterTableStep<'a> {
     DropColumn {
         column_name: &'a str,
     },
-    AddRangePartition {
-        lower_bound: Vec<Literal<'a>>,
-        upper_bound: Vec<Literal<'a>>,
-    },
-    DropRangePartition {
-        lower_bound: Vec<Literal<'a>>,
-        upper_bound: Vec<Literal<'a>>,
-    },
+    AddRangePartition(Bound<'a>, Bound<'a>),
+    DropRangePartition(Bound<'a>, Bound<'a>),
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -618,7 +632,7 @@ pub enum Selector<'a> {
     CountStar,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum Literal<'a> {
     Bool(bool),
     Integer(i64),

@@ -8,6 +8,7 @@
 use std::borrow::Cow;
 
 use chrono;
+use either;
 use kudu;
 
 use command;
@@ -114,6 +115,12 @@ pub trait Parser<'a> {
     where Self: Sized,
           P: Parser<'a, Output=Self::Output> {
         OrElse(self, p)
+    }
+
+    fn either<T, P>(self, p: P) -> Either<Self, P>
+    where Self: Sized,
+          P: Parser<'a, Output=T> {
+        Either(self, p)
     }
 }
 
@@ -244,6 +251,21 @@ where P1: Parser<'a, Output=T>,
                 ParseResult::Ok(t, remaining)
             },
             result => reduce_results(result, self.1.parse(input)),
+        }
+    }
+}
+
+pub struct Either<P1, P2>(P1, P2);
+impl <'a, T1, T2, P1, P2> Parser<'a> for Either<P1, P2>
+where P1: Parser<'a, Output=T1>,
+      P2: Parser<'a, Output=T2> {
+    type Output = either::Either<T1, T2>;
+    fn parse(&self, input: &'a str) -> ParseResult<'a, either::Either<T1, T2>> {
+        match self.0.parse(input).map(either::Left) {
+            ParseResult::Ok(t, remaining) => {
+                ParseResult::Ok(t, remaining)
+            },
+            result => reduce_results(result, self.1.parse(input).map(either::Right)),
         }
     }
 }
@@ -1239,26 +1261,109 @@ impl <'a> Parser<'a> for PrimaryKey {
     }
 }
 
-// ((0, "foo"), (456, "bar"))
-struct RangeBound;
-impl <'a> Parser<'a> for RangeBound {
-    type Output = (Vec<command::Literal<'a>>, Vec<command::Literal<'a>>);
-    fn parse(&self, input: &'a str) -> ParseResult<'a, (Vec<command::Literal<'a>>,
-                                                        Vec<command::Literal<'a>>)> {
-        let (lower_bound, remaining) = try_parse!(Char('(', "(").and_then(Chomp0)
-                                                                .and_then(Row)
-                                                                .followed_by(Chomp0)
-                                                                .followed_by(Char(',', ","))
-                                                                .followed_by(Chomp0)
-                                                                .parse(input));
-        let (upper_bound, remaining) = try_parse!(Row.followed_by(Chomp0)
-                                                     .followed_by(Char(')', ")"))
-                                                     .parse(remaining));
+// VALUES >= (100)
+// VALUES > (100)
+// VALUES < 100
+// VALUES <= (100,)
+// VALUES = 100
+struct UnaryRangeBound;
+impl <'a> Parser<'a> for UnaryRangeBound {
+    type Output = (command::Bound<'a>, command::Bound<'a>);
+    fn parse(&self, input: &'a str) -> ParseResult<'a, (command::Bound<'a>, command::Bound<'a>)> {
+        enum Operator {
+            GreaterEqual,
+            Greater,
+            Equal,
+            LessEqual,
+            Less,
+        }
+
+        let (op, remaining) =
+            try_parse!(Keyword("VALUES").and_then(Chomp0)
+                                        .and_then(Tag(">=").map(|_| Operator::GreaterEqual)
+                                                           .or_else(Tag(">").map(|_| Operator::Greater))
+                                                           .or_else(Tag("=").map(|_| Operator::Equal))
+                                                           .or_else(Tag("<=").map(|_| Operator::LessEqual))
+                                                           .or_else(Tag("<").map(|_| Operator::Less)))
+                                        .followed_by(Chomp0)
+                                        .parse(input));
+
+        let (values, remaining) =
+            try_parse!(Row.or_else(Literal.map(|value| vec![value])).parse(remaining));
+
+        let bounds = match op {
+            Operator::GreaterEqual => (command::Bound::Inclusive(values), command::Bound::Unbounded),
+            Operator::Greater => (command::Bound::Exclusive(values), command::Bound::Unbounded),
+            Operator::Equal => (command::Bound::Inclusive(values.clone()), command::Bound::Inclusive(values)),
+            Operator::LessEqual => (command::Bound::Unbounded, command::Bound::Inclusive(values)),
+            Operator::Less => (command::Bound::Unbounded, command::Bound::Exclusive(values)),
+        };
+
+        ParseResult::Ok(bounds, remaining)
+    }
+}
+
+
+// (100) <= VALUES < 100
+// (100) <= VALUES <= (100)
+// (100) < VALUES < (100)
+// (100) < VALUES <= (100)
+struct BinaryRangeBound;
+impl <'a> Parser<'a> for BinaryRangeBound {
+    type Output = (command::Bound<'a>, command::Bound<'a>);
+    fn parse(&self, input: &'a str) -> ParseResult<'a, (command::Bound<'a>, command::Bound<'a>)> {
+        let values = || Row.or_else(Literal.map(|value| vec![value]));
+
+        let (lower, remaining) = try_parse!(values().followed_by(Chomp0).parse(input));
+
+        let (lower_inclusive, remaining) =
+            try_parse!(Tag(">=").map(|_| true)
+                                .or_else(Tag(">").map(|_| false))
+                                .followed_by(Chomp0)
+                                .parse(remaining));
+
+        let (upper_inclusive, remaining) =
+            try_parse!(Keyword("VALUES").and_then(Chomp0)
+                                        .and_then(Tag("<=").map(|_| true)
+                                                           .or_else(Tag("<").map(|_| false)))
+                                        .followed_by(Chomp0)
+                                        .parse(remaining));
+
+        let (upper, remaining) = try_parse!(values().parse(remaining));
+
+        let lower_bound = if lower_inclusive {
+            command::Bound::Inclusive(lower)
+        } else {
+            command::Bound::Exclusive(lower)
+        };
+
+        let upper_bound = if upper_inclusive {
+            command::Bound::Inclusive(upper)
+        } else {
+            command::Bound::Exclusive(upper)
+        };
+
         ParseResult::Ok((lower_bound, upper_bound), remaining)
     }
 }
 
-// RANGE (a, b, c) SPLIT ROWS (123), (456), RANGE BOUNDS ((0), (250)), ((400), (800));
+struct RangeBound;
+impl <'a> Parser<'a> for RangeBound {
+    type Output = (command::Bound<'a>, command::Bound<'a>);
+    fn parse(&self, input: &'a str) -> ParseResult<'a, (command::Bound<'a>, command::Bound<'a>)> {
+        UnaryRangeBound.or_else(BinaryRangeBound).parse(input)
+    }
+}
+
+// RANGE (a) (
+//      PARTITION 1 <= VALUES < 99,
+//      PARTITION 100 <= VALUES < 120,
+//      PARTITION VALUES = 122,
+//      PARTITION VALUES >= 130,
+//      PARTITION VALUES > 140,
+//      PARTITION VALUES < 140,
+//      PARTITION VALUES <= 140,
+// )
 struct RangePartition;
 impl <'a> Parser<'a> for RangePartition {
     type Output = command::RangePartition<'a>;
@@ -1273,29 +1378,20 @@ impl <'a> Parser<'a> for RangePartition {
                                        .followed_by(Char(')', ")"))
                                        .parse(input));
 
-        let (split_rows, remaining) =
-            try_parse!(OptionalClause(Keyword("SPLIT").and_then(Chomp1)
-                                                      .and_then(Keyword("ROWS"))
-                                                      .and_then(Chomp0)
-                                                      .and_then(Delimited1(Row, Chomp0.and_then(Char(',', ","))
-                                                                                      .and_then(Chomp0))))
-                       .map(|o| o.unwrap_or(Vec::new()))
-                       .parse(remaining));
+        let (partitions, remaining) =
+            try_parse!(Chomp0.and_then(Char('(', "("))
+                             .and_then(Chomp0)
+                             .and_then(Delimited1(Keyword("PARTITION").and_then(Chomp1).and_then(RangeBound),
+                                                  Chomp0.and_then(Char(',', ",")).and_then(Chomp0)))
+                             .followed_by(Chomp0)
+                             .followed_by(Char(')', ")"))
+                             .parse(remaining));
 
-        let (bounds, remaining) =
-            try_parse!(OptionalClause(Keyword("BOUNDS").and_then(Chomp1)
-                                                       .and_then(Delimited1(RangeBound,
-                                                                            Chomp0.and_then(Char(',', ","))
-                                                                                  .and_then(Chomp0))))
-                       .map(|o| o.unwrap_or(Vec::new()))
-                       .parse(remaining));
-
-
-        ParseResult::Ok(command::RangePartition::new(columns, split_rows, bounds), remaining)
+        ParseResult::Ok(command::RangePartition::new(columns, partitions), remaining)
     }
 }
 
-// HASH (a, b, c) WITH SEED 99 INTO 4 BUCKETS
+// HASH (a, b, c) SEED 99 PARTITIONS 4
 struct HashPartition;
 impl <'a> Parser<'a> for HashPartition {
     type Output = command::HashPartition<'a>;
@@ -1310,34 +1406,25 @@ impl <'a> Parser<'a> for HashPartition {
                                       .followed_by(Char(')', ")"))
                                       .parse(input));
 
-        let (seed, remaining) = try_parse!(OptionalClause(Keyword("WITH").and_then(Chomp1)
-                                                                         .and_then(Keyword("SEED"))
-                                                                         .and_then(Chomp1)
-                                                                         .and_then(U32))
-                                                                         .parse(remaining));
+        let (seed, remaining) = try_parse!(OptionalClause(Keyword("SEED").and_then(U32)).parse(remaining));
 
-        let (buckets, remaining) = try_parse!(Chomp1.and_then(Keyword("INTO"))
+        let (buckets, remaining) = try_parse!(Chomp1.and_then(Keyword("PARTITIONS"))
                                                     .and_then(Chomp1)
                                                     .and_then(U32)
-                                                    .followed_by(Chomp1)
-                                                    .followed_by(Keyword("BUCKETS"))
                                                     .parse(remaining));
 
         ParseResult::Ok(command::HashPartition::new(columns, seed, buckets), remaining)
     }
 }
 
-// WITH 1 REPLICA
-// WITH 3 REPLICAS
+// REPLICAS 1
 struct Replicas;
 impl <'a> Parser<'a> for Replicas {
     type Output = u32;
     fn parse(&self, input: &'a str) -> ParseResult<'a, u32> {
-        Keyword("WITH").and_then(Chomp1)
-                       .and_then(U32)
-                       .followed_by(Chomp1)
-                       .followed_by(OrElse(Keyword("REPLICAS"), Keyword("REPLICA")))
-                       .parse(input)
+        Keyword("REPLICAS").and_then(Chomp1)
+                           .and_then(U32)
+                           .parse(input)
     }
 }
 
@@ -1403,20 +1490,44 @@ impl <'a> Parser<'a> for CreateTable {
 
         let (_, remaining) = try_parse!(Chomp0.and_then(Optional(Char(')', ")"))).parse(remaining));
 
-        let (distribute_by, remaining) =
-            try_parse!(OptionalClause(Keyword("DISTRIBUTE").and_then(Chomp1)
-                                                           .and_then(Keyword("BY")))
+        let (partition_by, remaining) =
+            try_parse!(OptionalClause(Keyword("PARTITION").and_then(Chomp1)
+                                                          .and_then(Keyword("BY")))
                        .parse(remaining));
 
-        let (range_partition, hash_partitions, remaining) = if distribute_by.is_some() {
-            let (range_partition, remaining) =
-                try_parse!(OptionalClause(RangePartition).parse(remaining));
-            let (hash_partitions, remaining) =
-                try_parse!(Many0(Chomp1.and_then(HashPartition)).parse(remaining));
-            (range_partition, hash_partitions, remaining)
-        } else {
-            (None, Vec::new(), remaining)
-        };
+        let mut remaining = remaining;
+        let mut range_partition = None;
+        let mut hash_partitions = Vec::new();
+        if partition_by.is_some() {
+            {
+                let (partition, rem) = try_parse!(Chomp1.and_then(RangePartition.either(HashPartition))
+                                                        .parse(remaining));
+                match partition {
+                    either::Left(range) => range_partition = Some(range),
+                    either::Right(hash) => hash_partitions.push(hash),
+                }
+                remaining = rem;
+            }
+            loop {
+                let (sep, rem) = try_parse!(Optional(Char(',', ",")).parse(remaining));
+                if sep.is_none() { break; }
+                remaining = rem;
+
+                if range_partition.is_some() {
+                    let (hash, rem) = try_parse!(Chomp1.and_then(HashPartition).parse(remaining));
+                    hash_partitions.push(hash);
+                    remaining = rem;
+                } else {
+                    let (partition, rem) = try_parse!(Chomp1.and_then(RangePartition.either(HashPartition))
+                                                            .parse(remaining));
+                    match partition {
+                        either::Left(range) => range_partition = Some(range),
+                        either::Right(hash) => hash_partitions.push(hash),
+                    }
+                    remaining = rem;
+                };
+            }
+        }
 
         let (replicas, remaining) = try_parse!(OptionalClause(Replicas).parse(remaining));
 
@@ -1508,10 +1619,8 @@ impl <'a> Parser<'a> for AddRangePartition {
                       .and_then(Keyword("PARTITION"))
                       .and_then(Chomp1)
                       .and_then(RangeBound)
-                      .map(|(lower_bound, upper_bound)| command::AlterTableStep::AddRangePartition {
-                          lower_bound: lower_bound,
-                          upper_bound: upper_bound,
-                      })
+                      .map(|(lower_bound, upper_bound)|
+                           command::AlterTableStep::AddRangePartition(lower_bound, upper_bound))
                       .parse(input)
     }
 }
@@ -1526,10 +1635,8 @@ impl <'a> Parser<'a> for DropRangePartition {
                        .and_then(Keyword("PARTITION"))
                        .and_then(Chomp1)
                        .and_then(RangeBound)
-                       .map(|(lower_bound, upper_bound)| command::AlterTableStep::DropRangePartition {
-                           lower_bound: lower_bound,
-                           upper_bound: upper_bound,
-                       })
+                       .map(|(lower_bound, upper_bound)|
+                            command::AlterTableStep::DropRangePartition(lower_bound, upper_bound))
                        .parse(input)
     }
 }
@@ -1967,7 +2074,7 @@ SELECT";
                        replicas: None,
                    }, ""));
 
-        assert_eq!(parser.parse("create table t (foo int32) primary key (foo) DISTRIBUTE BY RANGE (foo);"),
+        assert_eq!(parser.parse("create table t (foo int32) primary key (foo) PARTITION BY RANGE (foo);"),
                    ParseResult::Ok(command::Command::CreateTable {
                        name: "t",
                        columns: vec![command::ColumnSpec::new("foo", kudu::DataType::Int32, None, None, None, None)],
@@ -1977,7 +2084,7 @@ SELECT";
                        replicas: None,
                    }, ""));
 
-        assert_eq!(parser.parse("create table t (foo int32) primary key (foo) DISTRIBUTE BY HASH (foo, bar) INTO 99 buckets;"),
+        assert_eq!(parser.parse("create table t (foo int32) primary key (foo) PARTITION BY HASH (foo, bar) PARTITIONS 99;"),
                    ParseResult::Ok(command::Command::CreateTable {
                        name: "t",
                        columns: vec![command::ColumnSpec::new("foo", kudu::DataType::Int32, None, None, None, None)],
@@ -1989,7 +2096,7 @@ SELECT";
 
         assert_eq!(parser.parse("create table t (foo int32) \
                                 primary key (foo) \
-                                DISTRIBUTE BY \
+                                PARTITION BY \
                                     RANGE (a) SPLIT ROWS (1), (2) \
                                     HASH (b) INTO 99 buckets \
                                     hash (c) with seed 9 into 50 buckets \
@@ -2009,7 +2116,7 @@ SELECT";
 
         assert_eq!(parser.parse("create table t (foo int32) \
                                 primary key (foo) \
-                                DISTRIBUTE BY \
+                                PARTITION BY \
                                     RANGE (a) SPLIT ROWS (1), (2) \
                                               BOUNDS ((0), (10)), ((100), ()) \
                                     HASH (b) INTO 99 buckets \
