@@ -5,31 +5,28 @@ env:
   global:
     # This will be part of the release tarball
     - PROJECT_NAME=ksql
-    - MAKE_DEB=yes
-    - DEB_MAINTAINER="Dan Burkert <dan@danburkert.com>"
-    - DEB_DESCRIPTION="An experimental SQL-like shell for Apache Kudu."
 
 matrix:
   include:
-    # Stable channel
+    # Nightly channel
     - os: osx
-      rust: stable
+      rust: nightly
       env: TARGET=x86_64-apple-darwin
       osx_image: xcode7
     - os: linux
-      rust: stable
+      rust: nightly
       env: TARGET=x86_64-unknown-linux-gnu
     - os: linux
-      rust: stable
+      rust: nightly
       env: TARGET=x86_64-unknown-linux-musl
       dist: trusty
       sudo: required
       addons:
         apt:
-          packages: &musl_packages
-          - musl
-          - musl-dev
-          - musl-tools
+          packages:
+            - musl
+            - musl-dev
+            - musl-tools
 
 before_install:
   - export PATH="$PATH:$HOME/.cargo/bin"
@@ -55,7 +52,7 @@ deploy:
   on:
     # channel to use to produce the release artifacts
     # NOTE make sure you only release *once* per target
-    condition: $TRAVIS_RUST_VERSION = stable
+    condition: $TRAVIS_RUST_VERSION = nightly
     tags: true
 
 branches:
