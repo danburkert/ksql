@@ -6,6 +6,9 @@ license = "MIT/Apache-2.0"
 description = "SQL-like shell for Apache Kudu (Incubating)"
 keywords = ["kudu", "database"]
 
+[profile.release]
+panic = "abort"
+
 [dependencies]
 chrono = "0.2"
 docopt = "0.6"

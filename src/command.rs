@@ -133,8 +133,8 @@ impl <'a> Command<'a> {
             Command::ShowTableTablets { table } => {
                 let deadline = deadline();
                 match client.open_table(table, deadline)
-                            .and_then(|table| table.list_tablets(deadline)) {
-                    Ok(tablets) => term.print_tablets(tablets),
+                            .and_then(|table| table.list_tablets(deadline).map(|list| (table, list))) {
+                    Ok((table, tablets)) => term.print_tablets(&table, tablets),
                     Err(error) => term.print_kudu_error(&error),
                 }
             },

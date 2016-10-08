@@ -1,8 +1,7 @@
 use std::fmt;
 use std::io::Write;
-use std::time::{Duration, UNIX_EPOCH, SystemTime};
+use std::time::Duration;
 
-use chrono;
 use itertools::Itertools;
 use kudu;
 use libc;
@@ -213,28 +212,64 @@ impl Terminal {
     }
 
     /// Prints the tablets.
-    pub fn print_tablets(&mut self, tablets: Vec<kudu::Tablet>) {
-        let mut ids = vec!["Tablet ID".to_owned()];
-        let mut lower_bounds = vec!["Partition Lower Bound".to_owned()];
-        let mut upper_bounds = vec!["Partition Upper Bound".to_owned()];
-        let mut leader_ids = vec!["Leader Tablet Server ID".to_owned()];
-        let mut leader_rpc_addrs = vec!["Leader RPC Addresses".to_owned()];
+    pub fn print_tablets(&mut self,
+                         table: &kudu::Table,
+                         tablets: Vec<kudu::Tablet>) {
+        let schema = table.schema();
+        let partition_schema = table.partition_schema();
 
-        for tablet in tablets {
-            ids.push(tablet.id().to_string());
-            lower_bounds.push(format!("{:?}", tablet.partition().lower_bound()));
-            upper_bounds.push(format!("{:?}", tablet.partition().upper_bound()));
+        let mut columns = vec![
+            vec!["Tablet ID".to_owned()],
+            vec!["Leader Tablet Server ID".to_owned()],
+            vec!["Leader RPC Addresses".to_owned()],
+        ];
+        let ids = 0;
+        let leader_ids = 1;
+        let leader_rpc_addrs = 2;
 
-            let leader = tablet.replicas().iter().find(|tablet| tablet.role() == kudu::RaftRole::Leader);
-            leader_ids.push(leader.map(kudu::Replica::id)
-                                  .map(kudu::TabletServerId::to_string)
-                                  .unwrap_or(String::new()));
-            leader_rpc_addrs.push(leader.map(kudu::Replica::rpc_addrs)
-                                        .map(host_ports_to_string)
-                                        .unwrap_or(String::new()));
+        for hash_schema in partition_schema.hash_partition_schemas() {
+            let hash_columns = hash_schema.columns()
+                                          .iter()
+                                          .map(|&idx| schema.columns()[idx].name())
+                                          .join(", ");
+            columns.push(vec![format!("Hash({}) Partition", hash_columns)]);
         }
 
-        self.print_table(&[&ids, &lower_bounds, &upper_bounds, &leader_ids, &leader_rpc_addrs]);
+        let has_range_partition =
+            !partition_schema.range_partition_schema().columns().is_empty();
+
+        if has_range_partition {
+            let range_columns = partition_schema.range_partition_schema()
+                                                .columns()
+                                                .iter()
+                                                .map(|&idx| schema.columns()[idx].name())
+                                                .join(", ");
+            columns.push(vec![format!("Range({}) Partition", range_columns)]);
+        }
+
+        for tablet in tablets {
+            columns[ids].push(tablet.id().to_string());
+
+            let leader = tablet.replicas().iter().find(|tablet| tablet.role() == kudu::RaftRole::Leader);
+            columns[leader_ids].push(leader.map(kudu::Replica::id)
+                                           .map(kudu::TabletServerId::to_string)
+                                           .unwrap_or(String::new()));
+            columns[leader_rpc_addrs].push(leader.map(kudu::Replica::rpc_addrs)
+                                                 .map(host_ports_to_string)
+                                                 .unwrap_or(String::new()));
+
+            for (offset, &partition) in tablet.partition().hash_partitions().iter().enumerate() {
+                columns[leader_rpc_addrs + offset + 1].push(partition.to_string())
+            }
+
+            if has_range_partition {
+                columns[leader_rpc_addrs + partition_schema.hash_partition_schemas().len() + 1].push(
+                    format!("{:?}", RangePartition(tablet.partition()))
+                );
+            }
+        }
+
+        self.print_table(&columns);
     }
 
     /// Prints the replicas.
@@ -320,22 +355,48 @@ impl Terminal {
     }
 
     pub fn print_create_table(&mut self, table: kudu::Table, tablets: Vec<kudu::Tablet>) {
-        writeln!(&mut self.out, "CREATE TABLE {:?} (", table.name()).unwrap();
-        writeln!(&mut self.out, "\t{:?}",
+        writeln!(&mut self.out, "CREATE TABLE {} (", table.name()).unwrap();
+        writeln!(&mut self.out, "    {:?},",
                  table.schema()
                       .columns()
                       .iter()
-                      .format_default(",\n\t")).unwrap();
-        writeln!(&mut self.out, ") PRIMARY KEY ({:?})",
+                      .format_default(",\n    ")).unwrap();
+        writeln!(&mut self.out, "    PRIMARY KEY ({}),\n)",
                  table.schema()
                       .primary_key()
                       .iter()
                       .map(kudu::Column::name)
                       .format_default(", ")).unwrap();
-        writeln!(&mut self.out, "DISTRIBUTE BY").unwrap();
 
-        if table.partition_schema().range_partition_schema().columns().len() > 0 {
-            writeln!(&mut self.out, "\tRANGE ({:?})",
+        let range_partitioned = !table.partition_schema().range_partition_schema().columns().is_empty();
+        let partitioned = range_partitioned || !table.partition_schema().hash_partition_schemas().is_empty();
+
+        if partitioned {
+            writeln!(&mut self.out, "PARTITION BY").unwrap();
+        }
+
+        let num_partitions = table.partition_schema().hash_partition_schemas().len() +
+                             if range_partitioned { 1 } else { 0 };
+
+        for (i, hash_partition) in table.partition_schema().hash_partition_schemas().iter().enumerate() {
+            let seed = if hash_partition.seed() == 0 {
+                String::new()
+            } else {
+                format!("SEED {} ", hash_partition.seed())
+            };
+
+            writeln!(&mut self.out, "    HASH ({}) {}PARTITIONS {}{}",
+                     hash_partition.columns()
+                                   .iter()
+                                   .map(|&idx| table.schema().columns()[idx].name())
+                                   .format_default(", "),
+                     seed,
+                     hash_partition.num_buckets(),
+                     if i < num_partitions { "," } else { "" }).unwrap();
+        }
+
+        if range_partitioned {
+            writeln!(&mut self.out, "    RANGE ({}) (",
                      table.partition_schema()
                           .range_partition_schema()
                           .columns()
@@ -343,34 +404,17 @@ impl Terminal {
                           .map(|&idx| table.schema().columns()[idx].name())
                           .format_default(", ")).unwrap();
 
-            let bounds = tablets.iter()
-                                .map(kudu::Tablet::partition)
-                                .filter(|partition| partition.lower_bound().hash_buckets().iter().all(|&b| b == 0))
-                                .format(",\n\t\t\t", |partition, f| f(&format_args!("(({:?}), ({:?}))",
-                                                                             RangePartitionKey { partition_key: partition.lower_bound() },
-                                                                             RangePartitionKey { partition_key: partition.upper_bound() })));
+            let range_partitions = tablets.iter()
+                                          .map(kudu::Tablet::partition)
+                                          .filter(|partition| partition.hash_partitions().iter().all(|&b| b == 0))
+                                          .format(",\n        ", |partition, f| {
+                                              f(&format_args!("PARTITION {:?}", RangePartition(partition)))
+                                          });
 
-
-            writeln!(&mut self.out, "\t\tBOUNDS  {}", bounds).unwrap();
+            writeln!(&mut self.out, "        {},\n    )", range_partitions).unwrap();
         }
 
-        for hash_partition in table.partition_schema().hash_partition_schemas() {
-            let seed = if hash_partition.seed() == 0 {
-                String::new()
-            } else {
-                format!("WITH SEED {} ", hash_partition.seed())
-            };
-
-            writeln!(&mut self.out, "\tHASH ({:?}) {}INTO {} BUCKETS",
-                     hash_partition.columns()
-                                   .iter()
-                                   .map(|&idx| table.schema().columns()[idx].name())
-                                   .format_default(", "),
-                     seed,
-                     hash_partition.num_buckets()).unwrap();
-        }
-
-        writeln!(&mut self.out, "WITH {} REPLICAS;", table.num_replicas()).unwrap();
+        writeln!(&mut self.out, "REPLICAS {};", table.num_replicas()).unwrap();
     }
 
     pub fn print_not_implemented(&mut self) {
@@ -378,56 +422,10 @@ impl Terminal {
     }
 }
 
-/// The range component of a partition key.
-struct RangePartitionKey<'a> {
-    partition_key: &'a kudu::PartitionKey,
-}
-
-impl <'a> fmt::Debug for RangePartitionKey<'a> {
+/// Formats a range partition for printing.
+struct RangePartition<'a>(&'a kudu::Partition);
+impl <'a> fmt::Debug for RangePartition<'a> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        let mut is_first = true;
-        let row = &self.partition_key.range_row();
-        for &idx in self.partition_key.partition_schema().range_partition_schema().columns() {
-            if !row.is_set(idx).unwrap() { break; }
-            if is_first { is_first = false; }
-            else { try!(write!(f, ", ")) }
-            let column = &row.schema().columns()[idx];
-            match column.data_type() {
-                kudu::DataType::Bool => try!(write!(f, "{}", row.get::<bool>(idx).unwrap())),
-                kudu::DataType::Int8 => try!(write!(f, "{}", row.get::<i8>(idx).unwrap())),
-                kudu::DataType::Int16 => try!(write!(f, "{}", row.get::<i16>(idx).unwrap())),
-                kudu::DataType::Int32 => try!(write!(f, "{}", row.get::<i32>(idx).unwrap())),
-                kudu::DataType::Int64 => try!(write!(f, "{}", row.get::<i64>(idx).unwrap())),
-                kudu::DataType::Timestamp => try!(fmt_timestamp(f, row.get::<SystemTime>(idx).unwrap())),
-                kudu::DataType::Float => try!(write!(f, "{}", row.get::<f32>(idx).unwrap())),
-                kudu::DataType::Double => try!(write!(f, "{}", row.get::<f64>(idx).unwrap())),
-                kudu::DataType::Binary => try!(fmt_hex(f, row.get::<&[u8]>(idx).unwrap())),
-                kudu::DataType::String => try!(write!(f, "{:?}", row.get::<&str>(idx).unwrap())),
-            }
-        }
-        Ok(())
+        self.0.fmt_range_partition(f)
     }
-}
-
-pub fn fmt_timestamp(f: &mut fmt::Formatter, timestamp: SystemTime) -> fmt::Result {
-    let datetime = if timestamp < UNIX_EPOCH {
-        chrono::NaiveDateTime::from_timestamp(0, 0) -
-            chrono::Duration::from_std(UNIX_EPOCH.duration_since(timestamp).unwrap()).unwrap()
-    } else {
-        chrono::NaiveDateTime::from_timestamp(0, 0) +
-            chrono::Duration::from_std(timestamp.duration_since(UNIX_EPOCH).unwrap()).unwrap()
-    };
-
-    write!(f, "{}", datetime.format("%Y-%m-%dT%H:%M:%S%.6fZ"))
-}
-
-pub fn fmt_hex<T>(f: &mut fmt::Formatter, bytes: &[T]) -> fmt::Result where T: fmt::LowerHex {
-    if bytes.is_empty() {
-        return write!(f, "0x")
-    }
-    try!(write!(f, "{:#x}", bytes[0]));
-    for b in &bytes[1..] {
-        try!(write!(f, "{:x}", b));
-    }
-    Ok(())
 }

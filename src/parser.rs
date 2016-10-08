@@ -1317,8 +1317,8 @@ impl <'a> Parser<'a> for BinaryRangeBound {
         let (lower, remaining) = try_parse!(values().followed_by(Chomp0).parse(input));
 
         let (lower_inclusive, remaining) =
-            try_parse!(Tag(">=").map(|_| true)
-                                .or_else(Tag(">").map(|_| false))
+            try_parse!(Tag("<=").map(|_| true)
+                                .or_else(Tag("<").map(|_| false))
                                 .followed_by(Chomp0)
                                 .parse(remaining));
 
@@ -1383,6 +1383,8 @@ impl <'a> Parser<'a> for RangePartition {
                              .and_then(Chomp0)
                              .and_then(Delimited1(Keyword("PARTITION").and_then(Chomp1).and_then(RangeBound),
                                                   Chomp0.and_then(Char(',', ",")).and_then(Chomp0)))
+                             .followed_by(Chomp0)
+                             .followed_by(Optional(Char(',', ",")))
                              .followed_by(Chomp0)
                              .followed_by(Char(')', ")"))
                              .parse(remaining));
