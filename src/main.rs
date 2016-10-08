@@ -107,7 +107,7 @@ Commands:
 
 static USAGE: &'static str = "
 Usage:
-  kudusql [--master=<addr>]... [--color=<color>]
+  ksql [--master=<addr>]... [--color=<color>]
 
 Options:
   -c --color=<color>        Whether to colorize output. Valid values are always,
@@ -152,7 +152,7 @@ fn main() {
     let mut readline = rustyline::Editor::new();
 
     let mut history_path = xdg::get_cache_home().unwrap();
-    history_path.push("kudusql");
+    history_path.push("ksql");
     history_path.push("history");
     let _ = readline.load_history(&history_path);
 

@@ -1,19 +1,19 @@
-# kudusql
+# ksql
 
-An experimental shell for Apache Kudu. Limited functionality.
+An experimental SQL-like shell for Apache Kudu.
 
-# Building
+# Building from Source
 
-`kudusql` is written in Rust, and uses `Cargo`, the Rust package manager for
+`ksql` is written in Rust, and uses `Cargo`, the Rust package manager for
 building the project. The easiest way to install Rust and Cargo is through
-[rustup](https://rustup.rs/). Once `cargo` is installed, building `kudusql` is
+[rustup](https://rustup.rs/). Once `cargo` is installed, building `ksql` is
 easy:
 
 ```bash
-# navigate to the checked-out kudusql repository directory, then
-# build kudusql:
+# navigate to the checked-out ksql repository directory, then
+# build ksql:
 cargo build --release
 
-# run the kudusql binary:
-target/release/kudusql
+# run the ksql binary:
+target/release/ksql
 ```

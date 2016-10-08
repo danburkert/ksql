@@ -1,10 +1,10 @@
 [package]
-name = "kudusql"
+name = "ksql"
 version = "0.1.0"
 authors = ["Dan Burkert <dan@danburkert.com>"]
 license = "MIT/Apache-2.0"
-description = "SQL-like shell for Apache Kudu (Incubating)"
-keywords = ["kudu", "database"]
+description = "SQL-like shell for Apache Kudu"
+keywords = ["kudu", "database", "sql"]
 
 [profile.release]
 panic = "abort"
