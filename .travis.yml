@@ -4,45 +4,18 @@ cache: cargo
 env:
   global:
     # This will be part of the release tarball
-    - PROJECT_NAME = ksql
-    - MAKE_DEB = yes
-    - DEB_MAINTAINER = "Dan Burkert <dan@danburkert.com>"
-    - DEB_DESCRIPTION = "An experimental SQL-like shell for Apache Kudu."
+    - PROJECT_NAME=ksql
+    - MAKE_DEB=yes
+    - DEB_MAINTAINER="Dan Burkert <dan@danburkert.com>"
+    - DEB_DESCRIPTION="An experimental SQL-like shell for Apache Kudu."
 
 matrix:
   include:
     # Stable channel
-    - os: linux
-      rust: stable
-      env: TARGET=aarch64-unknown-linux-gnu
-      # need Trusty because the glibc in Precise is too old and doesn't support 64-bit arm
-      dist: trusty
-      sudo: required
-    - os: osx
-      rust: stable
-      env: TARGET=i686-apple-darwin
-    - os: linux
-      rust: stable
-      env: TARGET=i686-unknown-linux-gnu
-      addons:
-        apt:
-          packages: &i686_unknown_linux_gnu
-            # Cross compiler and cross compiled C libraries
-            - gcc-multilib
-    - os: linux
-      rust: stable
-      env: TARGET=i686-unknown-linux-musl
-      dist: trusty
-      sudo: required
-      addons:
-        apt:
-          packages: &musl_packages
-          - musl
-          - musl-dev
-          - musl-tools
     - os: osx
       rust: stable
       env: TARGET=x86_64-apple-darwin
+      osx_image: xcode7
     - os: linux
       rust: stable
       env: TARGET=x86_64-unknown-linux-gnu
@@ -53,7 +26,10 @@ matrix:
       sudo: required
       addons:
         apt:
-          packages: *musl_packages
+          packages: &musl_packages
+          - musl
+          - musl-dev
+          - musl-tools
 
 before_install:
   - export PATH="$PATH:$HOME/.cargo/bin"
