@@ -9,7 +9,7 @@ the [releases](https://github.com/danburkert/ksql/releases) page. After starting
 the shell, type `help;` to see available commands.
 
 ```bash
-$ ksql --master=
+$ ksql
 ksql> help;
 ```
 
