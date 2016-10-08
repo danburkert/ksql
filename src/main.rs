@@ -43,6 +43,10 @@ use parser::{
 static HELP: &'static str = "
 Commands:
 
+    INSERT INTO <table> [(<col>, ..)] VALUES (<col-val>, ..)[, (<col-val>, ..)]..;
+        Insert one or more rows into the table. The column order may optionally
+        be specified.
+
     SHOW TABLES;
         List the name of all Kudu tables.
 
@@ -73,10 +77,13 @@ Commands:
         ..,
         [PRIMARY KEY (<col>, ..)],
     )
-    DISTRIBUTE BY [RANGE (<col>, ..) [SPLIT ROWS (<col-val>, ..)[, ..]]
-                                     [BOUNDS ((<col-val>, ..), (<col-val>, ..))[, ..]]
-                  [HASH (<col>, ..) [WITH SEED <seed>] INTO <buckets> BUCKETS]..
-    WITH <replicas> REPLICAS;
+    PARITITON BY
+       [HASH (<col>, ..) [SEED <seed>] PARTITIONS <num-hash-partitions>,]
+       [RANGE (<col>, ..) (
+            PARTITION lower_bound <= VALUES < upper_bound,
+            ..
+        ),]
+    REPLICAS <replicas>;
         Create a table with the specified columns and options.
 
     ALTER TABLE <table> [
@@ -87,16 +94,12 @@ Commands:
                                      [COMPRESSION <compression>]
                                      [BLOCK SIZE <block-size>] |
         DROP COLUMN <column-name> |
-        ADD RANGE PARTITION (<col-val>, ..), (<col-val>, ..) |
-        DROP RANGE PARTITION (<col-val>, ..), (<col-val>, ..)
+        ADD RANGE PARTITION (<col-val>, ..) <= VALUES < (<col-val>, ..) |
+        DROP RANGE PARTITION (<col-val>, ..) <= VALUES < (<col-val>, ..)
     ], ..;
 ";
 
 /*
-    INSERT INTO <table> [(<col>, ..)] VALUES (<col-val>, ..), ..;
-        Insert one or more rows into the table. The column order may optionally
-        be specified.
-
     SELECT * FROM <table>;
     SELECT <col>,.. FROM <table>;
         Select all or some columns from a table.
