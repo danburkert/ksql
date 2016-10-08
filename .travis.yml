@@ -1,0 +1,95 @@
+language: rust
+cache: cargo
+
+env:
+  global:
+    # This will be part of the release tarball
+    - PROJECT_NAME = ksql
+    - MAKE_DEB = yes
+    - DEB_MAINTAINER = "Dan Burkert <dan@danburkert.com>"
+    - DEB_DESCRIPTION = "An experimental SQL-like shell for Apache Kudu."
+
+matrix:
+  include:
+    # Stable channel
+    - os: linux
+      rust: stable
+      env: TARGET=aarch64-unknown-linux-gnu
+      # need Trusty because the glibc in Precise is too old and doesn't support 64-bit arm
+      dist: trusty
+      sudo: required
+    - os: osx
+      rust: stable
+      env: TARGET=i686-apple-darwin
+    - os: linux
+      rust: stable
+      env: TARGET=i686-unknown-linux-gnu
+      addons:
+        apt:
+          packages: &i686_unknown_linux_gnu
+            # Cross compiler and cross compiled C libraries
+            - gcc-multilib
+    - os: linux
+      rust: stable
+      env: TARGET=i686-unknown-linux-musl
+      dist: trusty
+      sudo: required
+      addons:
+        apt:
+          packages: &musl_packages
+          - musl
+          - musl-dev
+          - musl-tools
+    - os: osx
+      rust: stable
+      env: TARGET=x86_64-apple-darwin
+    - os: linux
+      rust: stable
+      env: TARGET=x86_64-unknown-linux-gnu
+    - os: linux
+      rust: stable
+      env: TARGET=x86_64-unknown-linux-musl
+      dist: trusty
+      sudo: required
+      addons:
+        apt:
+          packages: *musl_packages
+
+before_install:
+  - export PATH="$PATH:$HOME/.cargo/bin"
+
+install:
+  - bash ci/install.sh
+
+script:
+  - bash ci/script.sh
+
+before_deploy:
+  - bash ci/before_deploy.sh
+
+deploy:
+  provider: releases
+  api_key:
+    secure: "1zHx0ptMr5yy0drvN6ch2wkI5FQdOl9rgGZcZgE8cb3PLi02xeDyB3ZGAc/Mnkd56SjFIRG67En9AKpeJAWJ3Fma9Pic1G5uLY+doX2BtSbXiPDibLpMvvmLrKowdiCCk84hVMGTePAp7vuchC6rQT70eXeaRWh6ltohbwF9pW14HeqXl0tYJs187kAR5rQg2glN9Jf3PWfjFJaLzWRsI1BNCnZO5XxKGGJUdYlRC3ZARQWnPw68NA6V+gkvW5uNK3QxhGphhvIs8fXp5/cz4QX2O/MmarZ27Kdv7cDMeI3izHQm+RyYnhsmdPlOuIHrTNXQs7nA1BaZ2xrTU1f/+Bz1sKoxhYDRPyn80o/XKAfOUUo9WRQra6sPlhyR3rJq2XnEEirF8NuelGunT9xdSXp7fFK/mmWCcLDGGIXExynjlkulVQdCbOA0oljVmbIuRzcvzZGZtbY60gletssEWpOdUhQXdnsSsFwzJvHN6VwMLbU5L0c8KWnz3kfsEOc9hTQh6Jq0ZEyYuo4m+SlJeZGmNtOL28UW1fV4dEWH2+WjxPYm4KWth5J3LVSQN/YxcvtRBEkNWPjlROBuV7Xmx/gru0jtaEYxIb0PYsKOjhcN7PVGbb1kPYZ53VqBuNVgLWG0XIist/eIMGaj0bMQoKWqESz+tYDvPsgBwEIwpuY="
+  file_glob: true
+  file: ${PROJECT_NAME}-${TRAVIS_TAG}-${TARGET}.*
+  # don't delete the artifacts from previous phases
+  skip_cleanup: true
+  # deploy when a new tag is pushed
+  on:
+    # channel to use to produce the release artifacts
+    # NOTE make sure you only release *once* per target
+    condition: $TRAVIS_RUST_VERSION = stable
+    tags: true
+
+branches:
+  only:
+    # Pushes and PR to the master branch
+    - master
+    # IMPORTANT Ruby regex to match tags. Required, or travis won't trigger deploys when a new tag
+    # is pushed. This regex matches semantic versions like 1.2.3-rc4+2016.02.22
+    - /^\d+\.\d+\.\d+.*$/
+
+notifications:
+  email:
+    on_success: never
