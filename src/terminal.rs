@@ -360,13 +360,13 @@ impl Terminal {
                  table.schema()
                       .columns()
                       .iter()
-                      .format_default(",\n    ")).unwrap();
+                      .format(",\n    ")).unwrap();
         writeln!(&mut self.out, "    PRIMARY KEY ({}),\n)",
                  table.schema()
                       .primary_key()
                       .iter()
                       .map(kudu::Column::name)
-                      .format_default(", ")).unwrap();
+                      .format(", ")).unwrap();
 
         let range_partitioned = !table.partition_schema().range_partition_schema().columns().is_empty();
         let partitioned = range_partitioned || !table.partition_schema().hash_partition_schemas().is_empty();
@@ -389,7 +389,7 @@ impl Terminal {
                      hash_partition.columns()
                                    .iter()
                                    .map(|&idx| table.schema().columns()[idx].name())
-                                   .format_default(", "),
+                                   .format(", "),
                      seed,
                      hash_partition.num_buckets(),
                      if i < num_partitions { "," } else { "" }).unwrap();
@@ -402,12 +402,12 @@ impl Terminal {
                           .columns()
                           .iter()
                           .map(|&idx| table.schema().columns()[idx].name())
-                          .format_default(", ")).unwrap();
+                          .format(", ")).unwrap();
 
             let range_partitions = tablets.iter()
                                           .map(kudu::Tablet::partition)
                                           .filter(|partition| partition.hash_partitions().iter().all(|&b| b == 0))
-                                          .format(",\n        ", |partition, f| {
+                                          .format_with(",\n        ", |partition, f| {
                                               f(&format_args!("PARTITION {:?}", RangePartition(partition)))
                                           });
 
