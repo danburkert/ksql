@@ -629,7 +629,7 @@ fn is_numeric(c: char) -> bool {
 }
 
 fn is_identifier_char(c: char) -> bool {
-    is_alphabetic(c) || is_numeric(c) || c == '_'
+    is_alphabetic(c) || is_numeric(c) || c == '_' || c == ':' || c == '.'
 }
 
 /// Parses a table name. If the table name is suspected to be incomplete (the

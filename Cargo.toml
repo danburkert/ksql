@@ -13,6 +13,7 @@ panic = "abort"
 chrono = "0.2"
 docopt = "0.6"
 either = "1"
+env_logger = "0.4"
 itertools = "0.5"
 kudu = { git = "https://github.com/danburkert/kudu-rs" }
 libc = "0.2"

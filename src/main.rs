@@ -1,6 +1,7 @@
 extern crate chrono;
 extern crate docopt;
 extern crate either;
+extern crate env_logger;
 extern crate itertools;
 extern crate kudu;
 extern crate libc;
@@ -138,6 +139,7 @@ struct Args {
 }
 
 fn main() {
+    env_logger::init().unwrap();
     let args: Args = Docopt::new(USAGE)
                             .and_then(|d| d.decode())
                             .unwrap_or_else(|e| e.exit());

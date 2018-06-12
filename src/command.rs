@@ -303,7 +303,7 @@ fn convert_bounds<'a>(schema: &kudu::Schema,
             try!(populate_row(&mut lower, &columns, &values));
             kudu::RangePartitionBound::Exclusive(lower)
         },
-        Bound::Unbounded => kudu::RangePartitionBound::Exclusive(lower),
+        Bound::Unbounded => kudu::RangePartitionBound::Inclusive(lower),
     };
     let mut upper = schema.new_row();
     let upper_bound = match upper_bound {
