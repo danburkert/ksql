@@ -1,6 +1,5 @@
 use std::fmt;
 use std::io::Write;
-use std::time::Duration;
 
 use itertools::Itertools;
 use kudu;
@@ -15,53 +14,6 @@ pub struct Terminal {
     out: Box<term::StdoutTerminal>,
     err: Box<term::StderrTerminal>,
     color: bool,
-}
-
-fn host_ports_to_string(host_ports: &[(String, u16)]) -> String {
-    let mut s = String::new();
-    let mut is_first = true;
-    for host_port in host_ports {
-        if is_first { is_first = false; }
-        else { s.push(',') };
-        s.push_str(&host_port.0);
-        s.push(':');
-        s.push_str(&host_port.1.to_string());
-    }
-
-    s
-}
-
-fn format(n: u64, n_per_unit: u64, unit: &str) -> String {
-    if n % n_per_unit == 0 {
-        format!("{}{}", n / n_per_unit, unit)
-    } else {
-        format!("{:.2}{}", n as f64 / n_per_unit as f64, unit)
-    }
-}
-
-fn duration_to_string(duration: Duration) -> String {
-    let s = duration.as_secs();
-    let ns = duration.subsec_nanos() as u64;
-
-    const NANOS_PER_MICRO: u64 = 1_000;
-    const NANOS_PER_MILLI: u64 = 1_000_000;
-    const NANOS_PER_SEC: u64 = 1_000_000_000;
-    const SECS_PER_MINUTE: u64 = 60;
-    const SECS_PER_HOUR: u64 = 60 * 60;
-
-    if s >= SECS_PER_HOUR {
-        format(s, SECS_PER_HOUR, "h")
-    } else if s >= SECS_PER_MINUTE {
-        format(s, SECS_PER_MINUTE, "m")
-    } else if s >= 1 {
-        format(s * NANOS_PER_SEC + ns, NANOS_PER_SEC, "s")
-    } else if ns >= NANOS_PER_MILLI {
-        format(ns, NANOS_PER_MILLI, "ms")
-    } else if ns >= 1_000 {
-        format(ns, NANOS_PER_MICRO, "μs")
-    } else {
-        format!("{}ns", ns)
-    }
 }
 
 impl Terminal {
@@ -172,7 +124,7 @@ impl Terminal {
     }
 
     /// Prints the master servers.
-    pub fn print_masters(&mut self, masters: Vec<kudu::Master>) {
+    pub fn print_masters(&mut self, masters: Vec<kudu::MasterInfo>) {
         let mut ids = vec!["ID".to_owned()];
         let mut rpc_addrs = vec!["RPC Addresses".to_owned()];
         let mut http_addrs = vec!["HTTP Addresses".to_owned()];
@@ -181,8 +133,8 @@ impl Terminal {
 
         for master in masters {
             ids.push(master.id().to_string());
-            rpc_addrs.push(host_ports_to_string(master.rpc_addrs()));
-            http_addrs.push(host_ports_to_string(master.http_addrs()));
+            rpc_addrs.push(master.rpc_addrs().iter().join(", "));
+            http_addrs.push(master.http_addrs().iter().join(", "));
             seqnos.push(master.seqno().to_string());
             roles.push(format!("{:?}", master.role()));
         }
@@ -191,7 +143,7 @@ impl Terminal {
     }
 
     /// Prints the tablet servers.
-    pub fn print_tablet_servers(&mut self, tablet_servers: Vec<kudu::TabletServer>) {
+    pub fn print_tablet_servers(&mut self, tablet_servers: Vec<kudu::TabletServerInfo>) {
         let mut ids = vec!["Tablet Server ID".to_owned()];
         let mut rpc_addrs = vec!["RPC Addresses".to_owned()];
         let mut http_addrs = vec!["HTTP Addresses".to_owned()];
@@ -201,11 +153,11 @@ impl Terminal {
 
         for tablet_server in tablet_servers {
             ids.push(tablet_server.id().to_string());
-            rpc_addrs.push(host_ports_to_string(tablet_server.rpc_addrs()));
-            http_addrs.push(host_ports_to_string(tablet_server.http_addrs()));
+            rpc_addrs.push(tablet_server.rpc_addrs().iter().join(", "));
+            http_addrs.push(tablet_server.http_addrs().iter().join(", "));
             versions.push(tablet_server.software_version().to_owned());
             seqnos.push(tablet_server.seqno().to_string());
-            heartbeats.push(duration_to_string(tablet_server.duration_since_heartbeat()));
+            heartbeats.push(format!("{:?}", tablet_server.duration_since_heartbeat()));
         }
 
         self.print_table(&[&ids, &rpc_addrs, &http_addrs, &versions, &seqnos, &heartbeats]);
@@ -214,7 +166,7 @@ impl Terminal {
     /// Prints the tablets.
     pub fn print_tablets(&mut self,
                          table: &kudu::Table,
-                         tablets: Vec<kudu::Tablet>) {
+                         tablets: Vec<kudu::TabletInfo>) {
         let schema = table.schema();
         let partition_schema = table.partition_schema();
 
@@ -251,11 +203,11 @@ impl Terminal {
             columns[ids].push(tablet.id().to_string());
 
             let leader = tablet.replicas().iter().find(|tablet| tablet.role() == kudu::RaftRole::Leader);
-            columns[leader_ids].push(leader.map(kudu::Replica::id)
+            columns[leader_ids].push(leader.map(kudu::ReplicaInfo::id)
                                            .map(kudu::TabletServerId::to_string)
                                            .unwrap_or(String::new()));
-            columns[leader_rpc_addrs].push(leader.map(kudu::Replica::rpc_addrs)
-                                                 .map(host_ports_to_string)
+            columns[leader_rpc_addrs].push(leader.map(kudu::ReplicaInfo::rpc_addrs)
+                                                 .map(|rpc_addrs| rpc_addrs.iter().join(", "))
                                                  .unwrap_or(String::new()));
 
             for (offset, &partition) in tablet.partition().hash_partitions().iter().enumerate() {
@@ -273,7 +225,7 @@ impl Terminal {
     }
 
     /// Prints the replicas.
-    pub fn print_replicas(&mut self, tablets: Vec<kudu::Tablet>) {
+    pub fn print_replicas(&mut self, tablets: Vec<kudu::TabletInfo>) {
         let mut tablet_ids = vec!["Tablet ID".to_owned()];
         let mut tablet_server_ids = vec!["Tablet Server ID".to_owned()];
         let mut rpc_addrs = vec!["RPC Addresses".to_owned()];
@@ -283,7 +235,7 @@ impl Terminal {
             for replica in tablet.replicas() {
                 tablet_ids.push(tablet.id().to_string());
                 tablet_server_ids.push(replica.id().to_string());
-                rpc_addrs.push(host_ports_to_string(replica.rpc_addrs()));
+                rpc_addrs.push(replica.rpc_addrs().iter().join(", "));
                 roles.push(format!("{:?}", replica.role()));
             }
         }
@@ -354,7 +306,7 @@ impl Terminal {
         writeln!(&mut self.out, "").unwrap();
     }
 
-    pub fn print_create_table(&mut self, table: kudu::Table, tablets: Vec<kudu::Tablet>) {
+    pub fn print_create_table(&mut self, table: kudu::Table, tablets: Vec<kudu::TabletInfo>) {
         writeln!(&mut self.out, "CREATE TABLE {} (", table.name()).unwrap();
         writeln!(&mut self.out, "    {:?},",
                  table.schema()
@@ -405,7 +357,7 @@ impl Terminal {
                           .format(", ")).unwrap();
 
             let range_partitions = tablets.iter()
-                                          .map(kudu::Tablet::partition)
+                                          .map(kudu::TabletInfo::partition)
                                           .filter(|partition| partition.hash_partitions().iter().all(|&b| b == 0))
                                           .format_with(",\n        ", |partition, f| {
                                               f(&format_args!("PARTITION {:?}", RangePartition(partition)))
@@ -415,10 +367,6 @@ impl Terminal {
         }
 
         writeln!(&mut self.out, "REPLICAS {};", table.num_replicas()).unwrap();
-    }
-
-    pub fn print_not_implemented(&mut self) {
-        writeln!(&mut self.out, "not yet implemented!").unwrap();
     }
 }
 

@@ -2,13 +2,18 @@ extern crate chrono;
 extern crate docopt;
 extern crate either;
 extern crate env_logger;
+extern crate futures;
 extern crate itertools;
 extern crate kudu;
 extern crate libc;
-extern crate rustc_serialize;
 extern crate rustyline;
+extern crate serde;
 extern crate term;
+extern crate tokio;
 extern crate xdg_basedir as xdg;
+
+#[macro_use]
+extern crate serde_derive;
 
 /// Returns the result of a parse if not successful, otherwise returns the value
 /// and remaining input.
@@ -29,9 +34,7 @@ mod terminal;
 use std::borrow::Cow;
 use std::cell::RefCell;
 use std::fs;
-use std::net::{IpAddr, SocketAddr, ToSocketAddrs};
 use std::rc::Rc;
-use std::str::FromStr;
 
 use docopt::Docopt;
 
@@ -120,7 +123,7 @@ Options:
   -h --help                 Show a help message.
 ";
 
-#[derive(Clone, Copy, Debug, RustcDecodable, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
 pub enum Color {
     /// Colorize output unless the terminal is not a tty.
     Auto,
@@ -132,25 +135,19 @@ pub enum Color {
     Never
 }
 
-#[derive(Debug, RustcDecodable)]
+#[derive(Debug, Deserialize)]
 struct Args {
     flag_master: Vec<String>,
     flag_color: Color,
 }
 
 fn main() {
-    env_logger::init().unwrap();
+    env_logger::init();
     let args: Args = Docopt::new(USAGE)
-                            .and_then(|d| d.decode())
+                            .and_then(|d| d.deserialize())
                             .unwrap_or_else(|e| e.exit());
 
     let mut term = terminal::Terminal::new(args.flag_color);
-
-    let client = {
-        let master_addrs = args.flag_master.iter().map(|master| resolve_master(master)).collect();
-        let config = kudu::ClientConfig::new(master_addrs);
-        kudu::Client::new(config)
-    };
 
     let previous_lines = Rc::new(RefCell::new(String::new()));
 
@@ -162,6 +159,12 @@ fn main() {
     let _ = readline.load_history(&history_path);
 
     readline.set_completer(Some(SqlCompleter(previous_lines.clone())));
+
+    let mut runtime = tokio::runtime::current_thread::Runtime::new().unwrap();
+
+    let mut client = runtime.block_on(kudu::Client::new(args.flag_master,
+                                                        kudu::Options::default()))
+                            .unwrap();
 
     loop {
         if previous_lines.borrow().is_empty() {
@@ -185,7 +188,7 @@ fn main() {
             ParseResult::Ok(commands, remaining) => {
                 assert!(remaining.is_empty());
                 for command in commands {
-                    command.execute(&client, &mut term);
+                    command.execute(&mut runtime, &mut client, &mut term);
                 }
             },
             ParseResult::Err(hints, remaining) => {
@@ -205,28 +208,6 @@ fn main() {
         },
         Err(error) => term.print_warning(&format!("unable to save history: {:?}", error)),
     }
-}
-
-/// Attempts to resolve a string into a master address. Panic on failure.
-fn resolve_master(input: &str) -> SocketAddr {
-    if let Ok(addr) = SocketAddr::from_str(input) {
-        return addr;
-    }
-    if let Ok(ip) = IpAddr::from_str(input) {
-        return SocketAddr::new(ip, 7051);
-    }
-    if let Ok(mut results) = input.to_socket_addrs() {
-        if let Some(addr) = results.next() {
-            return addr;
-        }
-    }
-    if let Ok(mut results) = (input, 7051).to_socket_addrs() {
-        if let Some(addr) = results.next() {
-            return addr;
-        }
-    }
-
-    panic!("Unable to resolve master address '{}'", input);
 }
 
 struct SqlCompleter(Rc<RefCell<String>>);

@@ -507,7 +507,6 @@ impl <'a> Parser<'a> for Keyword {
     type Output = &'a str;
     fn parse(&self, input: &'a str) -> ParseResult<'a, &'a str> {
         use ::std::cmp::min;
-        use ::std::ascii::AsciiExt;
 
         let keyword_bytes = self.0.as_bytes();
         let keyword_len = keyword_bytes.len();
