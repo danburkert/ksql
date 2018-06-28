@@ -16,12 +16,13 @@ either = "1"
 env_logger = "0.5"
 futures = "0.1"
 itertools = "0.7"
-#kudu = { git = "https://github.com/danburkert/kudu-rs", branch = "futures-wip" }
-kudu = { path = "../kudu-rs" }
+kudu = { git = "https://github.com/danburkert/kudu-rs", branch = "master" }
 libc = "0.2"
 rustyline = "1.0"
 serde = "1"
 serde_derive = "1"
+prettytable-rs = "0.7"
 term = "0.5"
 tokio = "0.1"
+# TODO: replace with 'directories'
 xdg-basedir = "1"

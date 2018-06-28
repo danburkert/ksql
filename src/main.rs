@@ -12,8 +12,8 @@ extern crate term;
 extern crate tokio;
 extern crate xdg_basedir as xdg;
 
-#[macro_use]
-extern crate serde_derive;
+#[macro_use] extern crate prettytable;
+#[macro_use] extern crate serde_derive;
 
 /// Returns the result of a parse if not successful, otherwise returns the value
 /// and remaining input.

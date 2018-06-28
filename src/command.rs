@@ -1,10 +1,6 @@
 use std::borrow::Cow;
 use std::iter;
-use std::time::{
-    Duration,
-    SystemTime,
-    UNIX_EPOCH
-};
+use std::time::{Duration, UNIX_EPOCH};
 
 use chrono;
 use futures::{
@@ -105,15 +101,11 @@ impl <'a> Command<'a> {
             Command::Help => term.print_help(),
             Command::ShowTables => match runtime.block_on(client.tables()) {
                 Ok(tables) => {
-                    let mut names = Vec::with_capacity(tables.len());
-                    let mut ids = Vec::with_capacity(tables.len());
-                    names.push("Table".to_string());
-                    ids.push("ID".to_string());
-                    for (table, id) in tables {
-                        names.push(table);
-                        ids.push(id.to_string());
+                    let mut table = table![[ "Table", "ID" ]];
+                    for (table_name, id) in tables {
+                        table.add_row(row![table_name, id]);
                     }
-                    term.print_table(&[names, ids])
+                    term.print_prettytable(table);
                 },
                 Err(error) => term.print_kudu_error(&error),
             },
@@ -169,21 +161,15 @@ impl <'a> Command<'a> {
                     Selector::Star => None,
                     Selector::Columns(columns) => Some(columns),
                     Selector::CountStar => return match runtime.block_on(future::lazy(|| count(client, table))) {
-                        Ok(table) => term.print_table(&table),
+                        Ok(count) => term.print_prettytable(table![["Count(*)"], [count]]),
                         Err(error) => term.print_kudu_error(&error),
                     }
                 };
 
-                match runtime.block_on(future::lazy(|| {
+                let _ = runtime.block_on(future::lazy(|| {
                     scan(client, table, columns)
-                        .for_each(|table| {
-                            term.print_table(&table[..]);
-                            Ok(())
-                        })
-                })) {
-                    Ok(()) => (),
-                    Err(error) => term.print_kudu_error(&error),
-                }
+                        .and_then(move |scan| term.print_scan(scan))
+                }));
             },
             Command::Insert { table, columns, rows } => {
                 // This AsRef shenanigans is pretty unfortunate, maybe when async/await is
@@ -338,98 +324,31 @@ fn convert_bounds<'a>(schema: &kudu::Schema,
     Ok((lower_bound, upper_bound))
 }
 
-const HEX_CHARS: &'static [u8] = b"0123456789abcdef";
-fn to_hex(bytes: &[u8]) -> String {
-    let mut v = Vec::with_capacity(bytes.len() * 2 + 2);
-    v.push('0' as u8);
-    v.push('x' as u8);
-    for &byte in bytes {
-        v.push(HEX_CHARS[(byte >> 4) as usize]);
-        v.push(HEX_CHARS[(byte & 0xf) as usize]);
-    }
-
-    unsafe {
-        String::from_utf8_unchecked(v)
-    }
-}
-
-fn to_date_time(timestamp: &SystemTime) -> chrono::DateTime<chrono::Utc> {
-    let naive = match timestamp.duration_since(UNIX_EPOCH) {
-        Ok(duration) => chrono::NaiveDateTime::from_timestamp(duration.as_secs() as i64, duration.subsec_nanos()),
-        Err(err) => {
-            let duration = err.duration();
-            if duration.subsec_nanos() > 0 {
-                chrono::NaiveDateTime::from_timestamp((-(duration.as_secs() as i64)) - 1, 1_000_000_000 - duration.subsec_nanos())
-            } else {
-                chrono::NaiveDateTime::from_timestamp(-(duration.as_secs() as i64), 0)
-            }
-        },
-    };
-    chrono::DateTime::from_utc(naive, chrono::Utc)
-}
-
 fn scan<'a>(client: &'a mut kudu::Client,
-        table: &'a str,
-        columns: Option<Vec<&'a str>>)
-        -> impl Stream<Item=Vec<Vec<String>>, Error=kudu::Error> + 'a {
-
+            table: &'a str,
+            columns: Option<Vec<&'a str>>)
+            -> impl Future<Item=kudu::Scan, Error=kudu::Error> + 'a {
     client.open_table(table)
-        .and_then(|table| {
-            let mut builder = table.scan_builder();
+          .and_then(|table| {
+              let mut builder = table.scan_builder();
 
-            if let Some(columns) = columns {
-                builder = builder.projected_column_names(columns)?;
-            }
+              if let Some(columns) = columns {
+                  builder = builder.projected_columns(columns)?;
+              }
 
-            Ok(builder.build())
-        })
-        .flatten_stream()
-        .and_then(|batch| {
-            let mut columns = batch.projected_schema()
-                                   .columns()
-                                   .iter()
-                                   .map(|column| vec![column.name().to_owned()])
-                                   .collect::<Vec<_>>();
-
-            for row in batch.into_iter() {
-                for (idx, mut column) in batch.projected_schema().columns().iter().enumerate() {
-                    let val = if row.is_null(idx)? {
-                        "null".to_owned()
-                    } else {
-                        match column.data_type() {
-                            kudu::DataType::Bool => row.get::<bool>(idx)?.to_string(),
-                            kudu::DataType::Int8 => row.get::<i8>(idx)?.to_string(),
-                            kudu::DataType::Int16 => row.get::<i16>(idx)?.to_string(),
-                            kudu::DataType::Int32 => row.get::<i32>(idx)?.to_string(),
-                            kudu::DataType::Int64 => row.get::<i64>(idx)?.to_string(),
-                            kudu::DataType::Float => row.get::<f32>(idx)?.to_string(),
-                            kudu::DataType::Double => row.get::<f64>(idx)?.to_string(),
-                            kudu::DataType::Timestamp => to_date_time(&row.get::<SystemTime>(idx)?).to_string(),
-                            kudu::DataType::String => format!("{:?}", row.get::<&str>(idx)?),
-                            kudu::DataType::Binary => to_hex(try!(row.get::<&[u8]>(idx))),
-                        }
-                    };
-                    columns[idx].push(val);
-                }
-            }
-            Ok(columns)
-        })
+              Ok(builder.build())
+          })
 }
 
-fn count<'a>(client: &mut kudu::Client,
-             table: &'a str)
-             -> impl Future<Item=Vec<Vec<String>>, Error=kudu::Error> + 'a {
+fn count<'a>(client: &mut kudu::Client, table: &'a str) -> impl Future<Item=u64, Error=kudu::Error> + 'a {
     client.open_table(table)
         .and_then(|table| {
             Ok(table.scan_builder()
-                    .projected_columns(iter::empty())?
+                    .projected_columns::<_, usize>(iter::empty())?
                     .build())
         })
         .and_then(|scan| {
-            scan.fold(0, |acc, batch| Ok::<usize, kudu::Error>(acc + batch.num_rows()))
-        })
-        .map(|count| {
-            vec![vec!["COUNT(*)".to_string(), count.to_string()]]
+            scan.fold(0, |acc, batch| Ok::<u64, kudu::Error>(acc + batch.num_rows() as u64))
         })
 }
 

@@ -1,9 +1,16 @@
 use std::fmt;
 use std::io::Write;
+use std::time::{
+    SystemTime,
+    UNIX_EPOCH
+};
 
+use chrono;
+use futures::{Future, Stream};
 use itertools::Itertools;
 use kudu;
 use libc;
+use prettytable;
 use term;
 
 use parser::Hint;
@@ -14,6 +21,60 @@ pub struct Terminal {
     out: Box<term::StdoutTerminal>,
     err: Box<term::StderrTerminal>,
     color: bool,
+}
+
+
+const HEX_CHARS: &'static [u8] = b"0123456789abcdef";
+fn to_hex(bytes: &[u8]) -> String {
+    let mut v = Vec::with_capacity(bytes.len() * 2 + 2);
+    v.push('0' as u8);
+    v.push('x' as u8);
+    for &byte in bytes {
+        v.push(HEX_CHARS[(byte >> 4) as usize]);
+        v.push(HEX_CHARS[(byte & 0xf) as usize]);
+    }
+
+    unsafe {
+        String::from_utf8_unchecked(v)
+    }
+}
+fn to_date_time(timestamp: &SystemTime) -> chrono::DateTime<chrono::Utc> {
+    let naive = match timestamp.duration_since(UNIX_EPOCH) {
+        Ok(duration) => chrono::NaiveDateTime::from_timestamp(duration.as_secs() as i64, duration.subsec_nanos()),
+        Err(err) => {
+            let duration = err.duration();
+            if duration.subsec_nanos() > 0 {
+                chrono::NaiveDateTime::from_timestamp((-(duration.as_secs() as i64)) - 1, 1_000_000_000 - duration.subsec_nanos())
+            } else {
+                chrono::NaiveDateTime::from_timestamp(-(duration.as_secs() as i64), 0)
+            }
+        },
+    };
+    chrono::DateTime::from_utc(naive, chrono::Utc)
+}
+
+// TODO: eventually this shouldn't need to return an error.
+pub fn row_to_cell(row: &kudu::Row) -> Result<prettytable::row::Row, kudu::Error> {
+    let cells = row.schema().columns().iter().enumerate().map(move |(idx, column)| {
+        let cell = if row.is_null(idx)? {
+            cell!("null")
+        } else {
+            match column.data_type() {
+                kudu::DataType::Bool => cell!(row.get::<_, bool>(idx)?),
+                kudu::DataType::Int8 => cell!(row.get::<_, i8>(idx)?),
+                kudu::DataType::Int16 => cell!(row.get::<_, i16>(idx)?),
+                kudu::DataType::Int32 => cell!(row.get::<_, i32>(idx)?),
+                kudu::DataType::Int64 => cell!(row.get::<_, i64>(idx)?),
+                kudu::DataType::Float => cell!(row.get::<_, f32>(idx)?),
+                kudu::DataType::Double => cell!(row.get::<_, f64>(idx)?),
+                kudu::DataType::Timestamp => cell!(to_date_time(&row.get::<_, SystemTime>(idx)?)),
+                kudu::DataType::String => cell!(format!("{:?}", row.get::<_, &str>(idx)?)),
+                kudu::DataType::Binary => cell!(to_hex(try!(row.get::<_, &[u8]>(idx)))),
+            }
+        };
+        Ok(cell)
+    }).collect::<Result<Vec<prettytable::cell::Cell>, kudu::Error>>()?;
+    Ok(prettytable::row::Row::new(cells))
 }
 
 impl Terminal {
@@ -125,70 +186,51 @@ impl Terminal {
 
     /// Prints the master servers.
     pub fn print_masters(&mut self, masters: Vec<kudu::MasterInfo>) {
-        let mut ids = vec!["ID".to_owned()];
-        let mut rpc_addrs = vec!["RPC Addresses".to_owned()];
-        let mut http_addrs = vec!["HTTP Addresses".to_owned()];
-        let mut seqnos = vec!["Sequence Number".to_owned()];
-        let mut roles = vec!["Role".to_owned()];
-
+        let mut table = table![["ID", "RPC Addresses", "HTTP Addresses", "Sequence Number", "Role"]];
         for master in masters {
-            ids.push(master.id().to_string());
-            rpc_addrs.push(master.rpc_addrs().iter().join(", "));
-            http_addrs.push(master.http_addrs().iter().join(", "));
-            seqnos.push(master.seqno().to_string());
-            roles.push(format!("{:?}", master.role()));
+            table.add_row(row![master.id(),
+                          master.rpc_addrs().iter().join(", "),
+                          master.http_addrs().iter().join(", "),
+                          master.seqno().to_string(),
+                          format!("{:?}", master.role())]);
         }
-
-        self.print_table(&[&ids, &rpc_addrs, &http_addrs, &seqnos, &roles]);
+        self.print_prettytable(table);
     }
 
     /// Prints the tablet servers.
     pub fn print_tablet_servers(&mut self, tablet_servers: Vec<kudu::TabletServerInfo>) {
-        let mut ids = vec!["Tablet Server ID".to_owned()];
-        let mut rpc_addrs = vec!["RPC Addresses".to_owned()];
-        let mut http_addrs = vec!["HTTP Addresses".to_owned()];
-        let mut versions = vec!["Software Version".to_owned()];
-        let mut seqnos = vec!["Sequence Number".to_owned()];
-        let mut heartbeats = vec!["Last Heartbeat".to_owned()];
-
+        let mut table = table![["Tablet Server ID", "RPC Addresses", "HTTP Addresses",
+                                "Software Version", "Sequence Number", "Last Heartbeat"]];
         for tablet_server in tablet_servers {
-            ids.push(tablet_server.id().to_string());
-            rpc_addrs.push(tablet_server.rpc_addrs().iter().join(", "));
-            http_addrs.push(tablet_server.http_addrs().iter().join(", "));
-            versions.push(tablet_server.software_version().to_owned());
-            seqnos.push(tablet_server.seqno().to_string());
-            heartbeats.push(format!("{:?}", tablet_server.duration_since_heartbeat()));
+            table.add_row(row![
+                tablet_server.id(),
+                tablet_server.rpc_addrs().iter().join(", "),
+                tablet_server.http_addrs().iter().join(", "),
+                tablet_server.software_version(),
+                tablet_server.seqno(),
+                format!("{:?}", tablet_server.duration_since_heartbeat()),
+            ]);
         }
-
-        self.print_table(&[&ids, &rpc_addrs, &http_addrs, &versions, &seqnos, &heartbeats]);
+        self.print_prettytable(table);
     }
 
     /// Prints the tablets.
     pub fn print_tablets(&mut self,
                          table: &kudu::Table,
                          tablets: Vec<kudu::TabletInfo>) {
+        let mut titles = row!["Tablet ID", "Leader Tablet Server ID", "Leader RPC Addresses"];
+
         let schema = table.schema();
         let partition_schema = table.partition_schema();
-
-        let mut columns = vec![
-            vec!["Tablet ID".to_owned()],
-            vec!["Leader Tablet Server ID".to_owned()],
-            vec!["Leader RPC Addresses".to_owned()],
-        ];
-        let ids = 0;
-        let leader_ids = 1;
-        let leader_rpc_addrs = 2;
-
         for hash_schema in partition_schema.hash_partition_schemas() {
             let hash_columns = hash_schema.columns()
                                           .iter()
                                           .map(|&idx| schema.columns()[idx].name())
                                           .join(", ");
-            columns.push(vec![format!("Hash({}) Partition", hash_columns)]);
+            titles.add_cell(cell!(format!("Hash({}) Partition", hash_columns)));
         }
 
-        let has_range_partition =
-            !partition_schema.range_partition_schema().columns().is_empty();
+        let has_range_partition = !partition_schema.range_partition_schema().columns().is_empty();
 
         if has_range_partition {
             let range_columns = partition_schema.range_partition_schema()
@@ -196,75 +238,97 @@ impl Terminal {
                                                 .iter()
                                                 .map(|&idx| schema.columns()[idx].name())
                                                 .join(", ");
-            columns.push(vec![format!("Range({}) Partition", range_columns)]);
+            titles.add_cell(cell!(format!("Range({}) Partition", range_columns)));
         }
 
+        let mut table = table!();
+        table.set_titles(titles);
+
         for tablet in tablets {
-            columns[ids].push(tablet.id().to_string());
+            let mut row = row![tablet.id()];
+            if let Some(leader) = tablet.replicas().iter().find(|tablet| tablet.role() == kudu::RaftRole::Leader) {
+                row.add_cell(cell!(leader.id()));
+                row.add_cell(cell!(leader.rpc_addrs().iter().join(", ")));
+            } else {
+                row.add_cell(cell!(""));
+                row.add_cell(cell!(""));
+            }
 
-            let leader = tablet.replicas().iter().find(|tablet| tablet.role() == kudu::RaftRole::Leader);
-            columns[leader_ids].push(leader.map(kudu::ReplicaInfo::id)
-                                           .map(kudu::TabletServerId::to_string)
-                                           .unwrap_or(String::new()));
-            columns[leader_rpc_addrs].push(leader.map(kudu::ReplicaInfo::rpc_addrs)
-                                                 .map(|rpc_addrs| rpc_addrs.iter().join(", "))
-                                                 .unwrap_or(String::new()));
-
-            for (offset, &partition) in tablet.partition().hash_partitions().iter().enumerate() {
-                columns[leader_rpc_addrs + offset + 1].push(partition.to_string())
+            for partition in tablet.partition().hash_partitions() {
+                row.add_cell(cell!(partition));
             }
 
             if has_range_partition {
-                columns[leader_rpc_addrs + partition_schema.hash_partition_schemas().len() + 1].push(
-                    format!("{:?}", RangePartition(tablet.partition()))
-                );
+                row.add_cell(cell!(format!("{:?}", RangePartition(tablet.partition()))));
             }
+            table.add_row(row);
         }
 
-        self.print_table(&columns);
+        self.print_prettytable(table);
     }
 
     /// Prints the replicas.
     pub fn print_replicas(&mut self, tablets: Vec<kudu::TabletInfo>) {
-        let mut tablet_ids = vec!["Tablet ID".to_owned()];
-        let mut tablet_server_ids = vec!["Tablet Server ID".to_owned()];
-        let mut rpc_addrs = vec!["RPC Addresses".to_owned()];
-        let mut roles = vec!["Role".to_owned()];
+        let mut table = table![[
+            "Tablet ID",
+            "Tablet Server ID",
+            "RPC Addresses",
+            "Role",
+        ]];
 
         for tablet in tablets {
             for replica in tablet.replicas() {
-                tablet_ids.push(tablet.id().to_string());
-                tablet_server_ids.push(replica.id().to_string());
-                rpc_addrs.push(replica.rpc_addrs().iter().join(", "));
-                roles.push(format!("{:?}", replica.role()));
+                table.add_row(row![
+                    tablet.id(),
+                    replica.id(),
+                    replica.rpc_addrs().iter().join(", "),
+                    format!("{:?}", replica.role()),
+                ]);
             }
         }
 
-        self.print_table(&[&tablet_ids, &tablet_server_ids, &rpc_addrs, &roles]);
+        self.print_prettytable(table);
     }
 
     /// Prints a table description to stdout.
     pub fn print_table_description(&mut self, schema: &kudu::Schema) {
-        let columns = (0..schema.columns().len()).map(|idx| schema.column(idx).unwrap()).collect::<Vec<_>>();
+        let mut table = table![[
+            "Column",
+            "Type",
+            "Nullable",
+            "Encoding",
+            "Compression",
+        ]];
 
-        let mut names = vec!["Column".to_owned()];
-        names.extend(columns.iter().map(|col| col.name().to_owned()));
+        for column in schema.columns() {
+            table.add_row(row![
+                column.name(),
+                format!("{:?}", column.data_type()),
+                column.is_nullable(),
+                format!("{:?}", column.encoding()),
+                format!("{:?}", column.compression()),
+            ]);
+        }
 
-        let mut types = vec!["Type".to_owned()];
-        types.extend(columns.iter().map(|col| format!("{:?}", col.data_type())));
+        self.print_prettytable(table);
+    }
 
-        let mut nullables = vec!["Nullable".to_owned()];
-        nullables.extend(columns.iter().map(|col| {
-            if col.is_nullable() { "True".to_owned() } else { "False".to_owned() }
-        }));
+    pub fn print_scan<'a>(&'a mut self, scan: kudu::Scan)
+                             -> impl Future<Item=(), Error=kudu::Error> + 'a {
+        let mut table = prettytable::Table::new();
+        table.set_titles(prettytable::row::Row::new(scan.projected_schema().columns()
+                                                                           .iter()
+                                                                           .map(kudu::Column::name)
+                                                                           .map(prettytable::cell::Cell::new)
+                                                                           .collect::<Vec<_>>()));
 
-        let mut encodings = vec!["Encoding".to_owned()];
-        encodings.extend(columns.iter().map(|col| format!("{:?}", col.encoding())));
-
-        let mut compressions = vec!["Compression".to_owned()];
-        compressions.extend(columns.iter().map(|col| format!("{:?}", col.compression())));
-
-        self.print_table(&[&names, &types, &nullables, &encodings, &compressions]);
+        scan.fold(table, |mut table, batch| -> Result<prettytable::Table, kudu::Error> {
+            for row in batch.into_iter() {
+                table.add_row(row_to_cell(&row)?);
+            }
+            Ok(table)
+        })
+        .map(move |table| self.print_prettytable(table))
     }
 
     pub fn print_table<C>(&mut self, columns: &[C]) where C: AsRef<[String]> {
@@ -304,6 +368,10 @@ impl Terminal {
             }
         }
         writeln!(&mut self.out, "").unwrap();
+    }
+
+    pub fn print_prettytable(&mut self, table: prettytable::Table) {
+        table.print_term(&mut *self.out).unwrap();
     }
 
     pub fn print_create_table(&mut self, table: kudu::Table, tablets: Vec<kudu::TabletInfo>) {
