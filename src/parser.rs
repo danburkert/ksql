@@ -15,7 +15,7 @@ use command;
 
 /// A hint which indicates what additional input is necessary to achieve a
 /// successful parse.
-#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy, PartialOrd, Ord)]
 pub enum Hint<'a> {
     /// Hint with a constant.
     Constant(&'static str),

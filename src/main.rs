@@ -196,7 +196,9 @@ fn main() {
                     command.execute(&mut runtime, &mut client, &mut term);
                 }
             }
-            ParseResult::Err(hints, remaining) => {
+            ParseResult::Err(mut hints, remaining) => {
+                hints.sort_unstable();
+                hints.dedup();
                 term.print_parse_error(&text, remaining, &hints);
             }
             _ => continue,
@@ -243,7 +245,7 @@ impl rustyline::completion::Completer for SqlCompleter {
             _ => (0, vec![]),
         };
 
-        hints.sort();
+        hints.sort_unstable();
         hints.dedup();
 
         Ok((pos, hints))
