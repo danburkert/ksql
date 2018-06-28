@@ -12,19 +12,25 @@ extern crate term;
 extern crate tokio;
 extern crate xdg_basedir as xdg;
 
-#[macro_use] extern crate prettytable;
-#[macro_use] extern crate serde_derive;
+#[macro_use]
+extern crate prettytable;
+#[macro_use]
+extern crate serde_derive;
 
 /// Returns the result of a parse if not successful, otherwise returns the value
 /// and remaining input.
 macro_rules! try_parse {
-    ($e:expr) => (match $e {
-        $crate::parser::ParseResult::Ok(t, remaining) => (t, remaining),
-        $crate::parser::ParseResult::Incomplete(hints, remaining) =>
-            return $crate::parser::ParseResult::Incomplete(hints, remaining),
-        $crate::parser::ParseResult::Err(err, remaining) =>
-            return $crate::parser::ParseResult::Err(err, remaining),
-    });
+    ($e:expr) => {
+        match $e {
+            $crate::parser::ParseResult::Ok(t, remaining) => (t, remaining),
+            $crate::parser::ParseResult::Incomplete(hints, remaining) => {
+                return $crate::parser::ParseResult::Incomplete(hints, remaining)
+            }
+            $crate::parser::ParseResult::Err(err, remaining) => {
+                return $crate::parser::ParseResult::Err(err, remaining)
+            }
+        }
+    };
 }
 
 mod command;
@@ -38,11 +44,7 @@ use std::rc::Rc;
 
 use docopt::Docopt;
 
-use parser::{
-    Parser,
-    ParseResult,
-    Commands1,
-};
+use parser::{Commands1, ParseResult, Parser};
 
 static HELP: &'static str = "
 Commands:
@@ -132,7 +134,7 @@ pub enum Color {
     Always,
 
     /// Never colorize output.
-    Never
+    Never,
 }
 
 #[derive(Debug, Deserialize)]
@@ -144,8 +146,8 @@ struct Args {
 fn main() {
     env_logger::init();
     let args: Args = Docopt::new(USAGE)
-                            .and_then(|d| d.deserialize())
-                            .unwrap_or_else(|e| e.exit());
+        .and_then(|d| d.deserialize())
+        .unwrap_or_else(|e| e.exit());
 
     let mut term = terminal::Terminal::new(args.flag_color);
 
@@ -162,9 +164,12 @@ fn main() {
 
     let mut runtime = tokio::runtime::current_thread::Runtime::new().unwrap();
 
-    let mut client = runtime.block_on(kudu::Client::new(args.flag_master,
-                                                        kudu::Options::default()))
-                            .unwrap();
+    let mut client = runtime
+        .block_on(kudu::Client::new(
+            args.flag_master,
+            kudu::Options::default(),
+        ))
+        .unwrap();
 
     loop {
         if previous_lines.borrow().is_empty() {
@@ -190,10 +195,10 @@ fn main() {
                 for command in commands {
                     command.execute(&mut runtime, &mut client, &mut term);
                 }
-            },
+            }
             ParseResult::Err(hints, remaining) => {
                 term.print_parse_error(&text, remaining, &hints);
-            },
+            }
             _ => continue,
         }
 
@@ -226,14 +231,15 @@ impl rustyline::completion::Completer for SqlCompleter {
         let (pos, mut hints) = match parser::Commands1.parse(&text) {
             parser::ParseResult::Incomplete(hints, remaining) => {
                 let pos = line.len() - remaining.len();
-                let hints = hints.into_iter().filter_map(|hint| {
-                    match hint {
+                let hints = hints
+                    .into_iter()
+                    .filter_map(|hint| match hint {
                         parser::Hint::Constant(s) => Some(s.to_owned()),
                         _ => None,
-                    }
-                }).collect();
+                    })
+                    .collect();
                 (pos, hints)
-            },
+            }
             _ => (0, vec![]),
         };
 

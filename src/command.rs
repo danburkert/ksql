@@ -3,11 +3,7 @@ use std::iter;
 use std::time::{Duration, UNIX_EPOCH};
 
 use chrono;
-use futures::{
-    Future,
-    Stream,
-    future,
-};
+use futures::{future, Future, Stream};
 use kudu;
 use tokio::runtime::current_thread::Runtime;
 
@@ -26,9 +22,7 @@ pub enum Command<'a> {
     ShowTables,
 
     /// SHOW CREATE TABLE <table>;
-    ShowCreateTable {
-        table: &'a str,
-    },
+    ShowCreateTable { table: &'a str },
 
     /// SHOW MASTERS;
     ShowMasters,
@@ -37,24 +31,16 @@ pub enum Command<'a> {
     ShowTabletServers,
 
     /// SHOW TABLETS OF TABLE <table>;
-    ShowTableTablets {
-        table: &'a str,
-    },
+    ShowTableTablets { table: &'a str },
 
     /// SHOW TABLET REPLICAS OF TABLE <table>;
-    ShowTableReplicas {
-        table: &'a str,
-    },
+    ShowTableReplicas { table: &'a str },
 
     /// DESCRIBE TABLE <table>;
-    DescribeTable {
-        table: &'a str,
-    },
+    DescribeTable { table: &'a str },
 
     /// DROP TABLE <table>;
-    DropTable {
-        table: &'a str,
-    },
+    DropTable { table: &'a str },
 
     /// INSERT INTO <table> [(<col>, ..)] VALUES (<col-val>, ..), ..;
     Insert {
@@ -90,35 +76,28 @@ pub enum Command<'a> {
     },
 }
 
-impl <'a> Command<'a> {
-
-    pub fn execute(self,
-                   runtime: &mut Runtime,
-                   client: &mut kudu::Client,
-                   term: &mut Terminal) {
+impl<'a> Command<'a> {
+    pub fn execute(self, runtime: &mut Runtime, client: &mut kudu::Client, term: &mut Terminal) {
         match self {
             Command::Noop => (),
             Command::Help => term.print_help(),
             Command::ShowTables => match runtime.block_on(client.tables()) {
                 Ok(tables) => {
-                    let mut table = table![[ "Table", "ID" ]];
+                    let mut table = table![["Table", "ID"]];
                     for (table_name, id) in tables {
                         table.add_row(row![table_name, id]);
                     }
                     term.print_prettytable(table);
-                },
+                }
                 Err(error) => term.print_kudu_error(&error),
             },
-            Command::ShowCreateTable { table } => {
-                match runtime.block_on(future::lazy(|| {
-                    client.open_table(table)
-                          .and_then(|table| {
-                              table.tablets().collect().map(|tablets| (table, tablets))
-                          })
-                })) {
-                    Ok((table, tablets)) => term.print_create_table(table, tablets),
-                    Err(error) => term.print_kudu_error(&error),
-                }
+            Command::ShowCreateTable { table } => match runtime.block_on(future::lazy(|| {
+                client
+                    .open_table(table)
+                    .and_then(|table| table.tablets().collect().map(|tablets| (table, tablets)))
+            })) {
+                Ok((table, tablets)) => term.print_create_table(table, tablets),
+                Err(error) => term.print_kudu_error(&error),
             },
             Command::ShowMasters => match runtime.block_on(client.masters()) {
                 Ok(masters) => term.print_masters(masters),
@@ -128,89 +107,115 @@ impl <'a> Command<'a> {
                 Ok(tablet_servers) => term.print_tablet_servers(tablet_servers),
                 Err(error) => term.print_kudu_error(&error),
             },
-            Command::ShowTableTablets { table } => {
-                match runtime.block_on(future::lazy(|| {
-                    client.open_table(table)
-                          .and_then(|table| {
-                              table.tablets().collect().map(|tablets| (table, tablets))
-                          })
-                })) {
-                    Ok((table, tablets)) => term.print_tablets(&table, tablets),
-                    Err(error) => term.print_kudu_error(&error),
-                }
+            Command::ShowTableTablets { table } => match runtime.block_on(future::lazy(|| {
+                client
+                    .open_table(table)
+                    .and_then(|table| table.tablets().collect().map(|tablets| (table, tablets)))
+            })) {
+                Ok((table, tablets)) => term.print_tablets(&table, tablets),
+                Err(error) => term.print_kudu_error(&error),
             },
-            Command::ShowTableReplicas { table } => {
-                match runtime.block_on(future::lazy(|| client.open_table(table)
-                                                             .and_then(|table| table.tablets().collect()))) {
-                    Ok(tablets) => term.print_replicas(tablets),
-                    Err(error) => term.print_kudu_error(&error),
-                }
+            Command::ShowTableReplicas { table } => match runtime.block_on(future::lazy(|| {
+                client
+                    .open_table(table)
+                    .and_then(|table| table.tablets().collect())
+            })) {
+                Ok(tablets) => term.print_replicas(tablets),
+                Err(error) => term.print_kudu_error(&error),
             },
             Command::DescribeTable { table } => match runtime.block_on(client.open_table(table)) {
                 Ok(table) => term.print_table_description(table.schema()),
                 Err(error) => term.print_kudu_error(&error),
             },
-            Command::DropTable { table } => {
-                match runtime.block_on(client.delete_table(table)) {
-                    Ok(_) => term.print_success("table dropped"),
-                    Err(error) => term.print_kudu_error(&error),
-                }
+            Command::DropTable { table } => match runtime.block_on(client.delete_table(table)) {
+                Ok(_) => term.print_success("table dropped"),
+                Err(error) => term.print_kudu_error(&error),
             },
             Command::Select { table, selector } => {
                 let columns = match selector {
                     Selector::Star => None,
                     Selector::Columns(columns) => Some(columns),
-                    Selector::CountStar => return match runtime.block_on(future::lazy(|| count(client, table))) {
-                        Ok(count) => term.print_prettytable(table![["Count(*)"], [count]]),
-                        Err(error) => term.print_kudu_error(&error),
+                    Selector::CountStar => {
+                        return match runtime.block_on(future::lazy(|| count(client, table))) {
+                            Ok(count) => term.print_prettytable(table![["Count(*)"], [count]]),
+                            Err(error) => term.print_kudu_error(&error),
+                        }
                     }
                 };
 
                 let _ = runtime.block_on(future::lazy(|| {
-                    scan(client, table, columns)
-                        .and_then(move |scan| term.print_scan(scan))
+                    scan(client, table, columns).and_then(move |scan| term.print_scan(scan))
                 }));
-            },
-            Command::Insert { table, columns, rows } => {
+            }
+            Command::Insert {
+                table,
+                columns,
+                rows,
+            } => {
                 // This AsRef shenanigans is pretty unfortunate, maybe when async/await is
                 // available it will be more straightforward.
-                match runtime.block_on(insert(client, table, columns, rows.iter().map(AsRef::as_ref))) {
-                    Ok(stats) => term.print_success(&format!("{} rows inserted, {} rows failed",
-                                                             stats.successful_operations(),
-                                                             stats.failed_operations())),
+                match runtime.block_on(insert(
+                    client,
+                    table,
+                    columns,
+                    rows.iter().map(AsRef::as_ref),
+                )) {
+                    Ok(stats) => term.print_success(&format!(
+                        "{} rows inserted, {} rows failed",
+                        stats.successful_operations(),
+                        stats.failed_operations()
+                    )),
                     Err(error) => term.print_kudu_error(&error),
                 }
-            },
-            Command::CreateTable { name, columns, primary_key, range_partition, hash_partitions, replicas } => {
-                match runtime.block_on(create_table(client, name, columns, primary_key, range_partition, hash_partitions, replicas)) {
-                    Ok(_) => term.print_success("table created"),
-                    Err(error) => term.print_kudu_error(&error),
-                }
+            }
+            Command::CreateTable {
+                name,
+                columns,
+                primary_key,
+                range_partition,
+                hash_partitions,
+                replicas,
+            } => match runtime.block_on(create_table(
+                client,
+                name,
+                columns,
+                primary_key,
+                range_partition,
+                hash_partitions,
+                replicas,
+            )) {
+                Ok(_) => term.print_success("table created"),
+                Err(error) => term.print_kudu_error(&error),
             },
             Command::AlterTable { table_name, steps } => {
                 eprintln!("Altering table {}; steps: {:?}", table_name, steps);
-                match runtime.block_on(future::lazy(move || alter_table(client, table_name, steps))) {
+                match runtime.block_on(future::lazy(move || alter_table(client, table_name, steps)))
+                {
                     Ok(_) => term.print_success("table altered"),
                     Err(error) => term.print_kudu_error(&error),
                 }
-            },
+            }
         }
     }
 }
 
-fn create_table<'a>(client: &'a mut kudu::Client,
-                    name: &str,
-                    mut columns: Vec<ColumnSpec>,
-                    primary_key: Vec<&str>,
-                    range_partition: Option<RangePartition>,
-                    hash_partitions: Vec<HashPartition>,
-                    replicas: Option<u32>)
-                    -> impl Future<Item=(), Error=kudu::Error> + 'a {
+fn create_table<'a>(
+    client: &'a mut kudu::Client,
+    name: &str,
+    mut columns: Vec<ColumnSpec>,
+    primary_key: Vec<&str>,
+    range_partition: Option<RangePartition>,
+    hash_partitions: Vec<HashPartition>,
+    replicas: Option<u32>,
+) -> impl Future<Item = (), Error = kudu::Error> + 'a {
     future::result((|| {
         let mut schema = kudu::SchemaBuilder::new();
 
         for column_name in &primary_key {
-            if let Some(mut column) = columns.iter_mut().find(|column| &column.name() == column_name) {
+            if let Some(mut column) = columns
+                .iter_mut()
+                .find(|column| &column.name() == column_name)
+            {
                 column.not_null = true;
             }
         }
@@ -233,7 +238,8 @@ fn create_table<'a>(client: &'a mut kudu::Client,
             }
 
             for (lower_bound, upper_bound) in range_partition.partitions {
-                let (lower_bound, upper_bound) = convert_bounds(&schema, &columns, lower_bound, upper_bound)?;
+                let (lower_bound, upper_bound) =
+                    convert_bounds(&schema, &columns, lower_bound, upper_bound)?;
                 table_builder.add_range_partition(lower_bound, upper_bound);
             }
         } else {
@@ -241,9 +247,11 @@ fn create_table<'a>(client: &'a mut kudu::Client,
         }
 
         for hash_partition in hash_partitions {
-            table_builder.add_hash_partitions_with_seed(hash_partition.columns,
-                                                        hash_partition.buckets,
-                                                        hash_partition.seed.unwrap_or(0));
+            table_builder.add_hash_partitions_with_seed(
+                hash_partition.columns,
+                hash_partition.buckets,
+                hash_partition.seed.unwrap_or(0),
+            );
         }
 
         if let Some(replicas) = replicas {
@@ -251,15 +259,17 @@ fn create_table<'a>(client: &'a mut kudu::Client,
         }
         Ok(table_builder)
     })()).and_then(move |table_builder| client.create_table(table_builder))
-         .map(|_| ())
+        .map(|_| ())
 }
 
-fn alter_table<'a>(client: &'a mut kudu::Client,
-                   table_name: &'a str,
-                   steps: Vec<AlterTableStep<'a>>)
-                   -> impl Future<Item=(), Error=kudu::Error> + 'a {
-    client.open_table(table_name)
-          .and_then(|table| {
+fn alter_table<'a>(
+    client: &'a mut kudu::Client,
+    table_name: &'a str,
+    steps: Vec<AlterTableStep<'a>>,
+) -> impl Future<Item = (), Error = kudu::Error> + 'a {
+    client
+        .open_table(table_name)
+        .and_then(|table| {
             let mut builder = kudu::AlterTableBuilder::new();
             let mut columns = Vec::new();
             for &idx in table.partition_schema().range_partition_schema().columns() {
@@ -270,131 +280,154 @@ fn alter_table<'a>(client: &'a mut kudu::Client,
                 match step {
                     AlterTableStep::RenameTable { table_name } => {
                         builder.rename_table(table_name);
-                    },
-                    AlterTableStep::RenameColumn { old_column_name, new_column_name } => {
+                    }
+                    AlterTableStep::RenameColumn {
+                        old_column_name,
+                        new_column_name,
+                    } => {
                         builder.rename_column(old_column_name, new_column_name);
-                    },
+                    }
                     AlterTableStep::AddColumn { column } => {
                         builder.add_column(column.into_column());
-                    },
+                    }
                     AlterTableStep::DropColumn { column_name } => {
                         builder.drop_column(column_name);
-                    },
+                    }
                     AlterTableStep::AddRangePartition(lower_bound, upper_bound) => {
                         let (lower_bound, upper_bound) =
                             convert_bounds(table.schema(), &columns, lower_bound, upper_bound)?;
                         builder.add_range_partition(&lower_bound, &upper_bound);
-                    },
+                    }
                     AlterTableStep::DropRangePartition(lower_bound, upper_bound) => {
                         let (lower_bound, upper_bound) =
                             convert_bounds(table.schema(), &columns, lower_bound, upper_bound)?;
                         builder.drop_range_partition(&lower_bound, &upper_bound);
-                    },
+                    }
                 }
             }
             Ok((table.id(), builder))
-          })
-          .and_then(move |(table_id, builder)| client.alter_table_by_id(table_id, builder))
-          .map(|_| ())
+        })
+        .and_then(move |(table_id, builder)| client.alter_table_by_id(table_id, builder))
+        .map(|_| ())
 }
 
-fn convert_bounds<'a>(schema: &kudu::Schema,
-                      columns: &[(usize, kudu::DataType)],
-                      lower_bound: Bound<'a>,
-                      upper_bound: Bound<'a>)
-                      -> kudu::Result<(kudu::RangePartitionBound, kudu::RangePartitionBound)> {
+fn convert_bounds<'a>(
+    schema: &kudu::Schema,
+    columns: &[(usize, kudu::DataType)],
+    lower_bound: Bound<'a>,
+    upper_bound: Bound<'a>,
+) -> kudu::Result<(kudu::RangePartitionBound, kudu::RangePartitionBound)> {
     let lower_bound: kudu::RangePartitionBound = match lower_bound {
         Bound::Inclusive(values) => {
             kudu::RangePartitionBound::Inclusive(row(schema, columns, &values)?.into_owned())
-        },
+        }
         Bound::Exclusive(values) => {
             kudu::RangePartitionBound::Exclusive(row(schema, columns, &values)?.into_owned())
-        },
+        }
         Bound::Unbounded => kudu::RangePartitionBound::Inclusive(schema.new_row()),
     };
     let upper_bound: kudu::RangePartitionBound = match upper_bound {
         Bound::Inclusive(values) => {
             kudu::RangePartitionBound::Inclusive(row(schema, columns, &values)?.into_owned())
-        },
+        }
         Bound::Exclusive(values) => {
             kudu::RangePartitionBound::Exclusive(row(schema, columns, &values)?.into_owned())
-        },
+        }
         Bound::Unbounded => kudu::RangePartitionBound::Exclusive(schema.new_row()),
     };
     Ok((lower_bound, upper_bound))
 }
 
-fn scan<'a>(client: &'a mut kudu::Client,
-            table: &'a str,
-            columns: Option<Vec<&'a str>>)
-            -> impl Future<Item=kudu::Scan, Error=kudu::Error> + 'a {
-    client.open_table(table)
-          .and_then(|table| {
-              let mut builder = table.scan_builder();
+fn scan<'a>(
+    client: &'a mut kudu::Client,
+    table: &'a str,
+    columns: Option<Vec<&'a str>>,
+) -> impl Future<Item = kudu::Scan, Error = kudu::Error> + 'a {
+    client.open_table(table).and_then(|table| {
+        let mut builder = table.scan_builder();
 
-              if let Some(columns) = columns {
-                  builder = builder.projected_columns(columns)?;
-              }
+        if let Some(columns) = columns {
+            builder = builder.projected_columns(columns)?;
+        }
 
-              Ok(builder.build())
-          })
+        Ok(builder.build())
+    })
 }
 
-fn count<'a>(client: &mut kudu::Client, table: &'a str) -> impl Future<Item=u64, Error=kudu::Error> + 'a {
-    client.open_table(table)
+fn count<'a>(
+    client: &mut kudu::Client,
+    table: &'a str,
+) -> impl Future<Item = u64, Error = kudu::Error> + 'a {
+    client
+        .open_table(table)
         .and_then(|table| {
-            Ok(table.scan_builder()
-                    .projected_columns::<_, usize>(iter::empty())?
-                    .build())
+            Ok(table
+                .scan_builder()
+                .projected_columns::<_, usize>(iter::empty())?
+                .build())
         })
         .and_then(|scan| {
-            scan.fold(0, |acc, batch| Ok::<u64, kudu::Error>(acc + batch.num_rows() as u64))
+            scan.fold(0, |acc, batch| {
+                Ok::<u64, kudu::Error>(acc + batch.num_rows() as u64)
+            })
         })
 }
 
-fn insert<'a, Rows>(client: &mut kudu::Client,
-                    table: &'a str,
-                    columns: Option<Vec<&'a str>>,
-                    rows: Rows)
-              -> impl Future<Item=kudu::FlushStats, Error=kudu::Error> + 'a
-where Rows: Iterator<Item=&'a [Literal<'a>]> +'a {
-    client.open_table(table)
-          .and_then(move |table| {
-              // Find column by name in schema, then map into the index and type
-              let num_columns = columns.as_ref().map(|cols| cols.len()).unwrap_or(table.schema().columns().len());
-              let mut column_types = Vec::with_capacity(num_columns);
-              if let Some(columns) = columns {
-                  for column in columns {
-                      let index = match table.schema().column_index(column) {
-                          Some(index) => index,
-                          None => return Err(kudu::Error::InvalidArgument(
-                                  format!("column {:?} not found", column))),
-                      };
-                      column_types.push((index, table.schema().columns()[index].data_type()));
-                  }
-              } else {
-                  for (index, column) in table.schema().columns().iter().enumerate() {
-                      column_types.push((index, column.data_type()));
-                  }
-              }
+fn insert<'a, Rows>(
+    client: &mut kudu::Client,
+    table: &'a str,
+    columns: Option<Vec<&'a str>>,
+    rows: Rows,
+) -> impl Future<Item = kudu::FlushStats, Error = kudu::Error> + 'a
+where
+    Rows: Iterator<Item = &'a [Literal<'a>]> + 'a,
+{
+    client
+        .open_table(table)
+        .and_then(move |table| {
+            // Find column by name in schema, then map into the index and type
+            let num_columns = columns
+                .as_ref()
+                .map(|cols| cols.len())
+                .unwrap_or(table.schema().columns().len());
+            let mut column_types = Vec::with_capacity(num_columns);
+            if let Some(columns) = columns {
+                for column in columns {
+                    let index = match table.schema().column_index(column) {
+                        Some(index) => index,
+                        None => {
+                            return Err(kudu::Error::InvalidArgument(format!(
+                                "column {:?} not found",
+                                column
+                            )))
+                        }
+                    };
+                    column_types.push((index, table.schema().columns()[index].data_type()));
+                }
+            } else {
+                for (index, column) in table.schema().columns().iter().enumerate() {
+                    column_types.push((index, column.data_type()));
+                }
+            }
 
-              rows.map(|r| row(table.schema(), &column_types, r))
-                  .collect::<Result<Vec<_>, _>>()
-                  .map(move |rows| (table, rows))
-          })
-          .and_then(|(table, rows)| {
-              let writer = table.new_writer(kudu::WriterConfig::default());
-              writer.insert_all(rows)
-          })
-          .and_then(|writer| writer.flush())
-          .map(|(_, flush_stats)| flush_stats)
+            rows.map(|r| row(table.schema(), &column_types, r))
+                .collect::<Result<Vec<_>, _>>()
+                .map(move |rows| (table, rows))
+        })
+        .and_then(|(table, rows)| {
+            let writer = table.new_writer(kudu::WriterConfig::default());
+            writer.insert_all(rows)
+        })
+        .and_then(|writer| writer.flush())
+        .map(|(_, flush_stats)| flush_stats)
 }
 
 /// Sets the columns in the partial row to the provided literal values.
-fn row<'a>(schema: &kudu::Schema,
-           columns: &[(usize, kudu::DataType)],
-           values: &'a [Literal])
-           -> kudu::Result<kudu::Row<'a>> {
+fn row<'a>(
+    schema: &kudu::Schema,
+    columns: &[(usize, kudu::DataType)],
+    values: &'a [Literal],
+) -> kudu::Result<kudu::Row<'a>> {
     let mut row = schema.new_row();
     for (&(column_idx, data_type), value) in columns.iter().zip(values) {
         match (data_type, value) {
@@ -414,14 +447,14 @@ fn row<'a>(schema: &kudu::Schema,
                     UNIX_EPOCH + Duration::new(value / 1000_000, (value % 1000_000) as u32 * 1000)
                 };
                 row.set(column_idx, time)?
-            },
+            }
             (kudu::DataType::Float, &Literal::Float(f)) => row.set(column_idx, f as f32)?,
             (_, &Literal::Float(f)) => row.set(column_idx, f)?,
             (_, &Literal::String(ref s)) => row.set(column_idx, &s[..])?,
             (_, &Literal::Binary(ref b)) => row.set(column_idx, &b[..])?,
             (_, &Literal::Null) => row.set_null(column_idx)?,
         };
-    };
+    }
     Ok(row)
 }
 
@@ -435,14 +468,15 @@ pub struct ColumnSpec<'a> {
     block_size: Option<u32>,
 }
 
-impl <'a> ColumnSpec<'a> {
-    pub fn new(name: &'a str,
-               data_type: kudu::DataType,
-               not_null: bool,
-               encoding_type: Option<kudu::EncodingType>,
-               compression_type: Option<kudu::CompressionType>,
-               block_size: Option<u32>)
-               -> ColumnSpec<'a> {
+impl<'a> ColumnSpec<'a> {
+    pub fn new(
+        name: &'a str,
+        data_type: kudu::DataType,
+        not_null: bool,
+        encoding_type: Option<kudu::EncodingType>,
+        compression_type: Option<kudu::CompressionType>,
+        block_size: Option<u32>,
+    ) -> ColumnSpec<'a> {
         ColumnSpec {
             name: name,
             data_type: data_type,
@@ -488,11 +522,15 @@ pub struct RangePartition<'a> {
     partitions: Vec<(Bound<'a>, Bound<'a>)>,
 }
 
-impl <'a> RangePartition<'a> {
-    pub fn new(columns: Vec<&'a str>,
-               partitions: Vec<(Bound<'a>, Bound<'a>)>)
-               -> RangePartition<'a> {
-        RangePartition { columns: columns, partitions: partitions }
+impl<'a> RangePartition<'a> {
+    pub fn new(
+        columns: Vec<&'a str>,
+        partitions: Vec<(Bound<'a>, Bound<'a>)>,
+    ) -> RangePartition<'a> {
+        RangePartition {
+            columns: columns,
+            partitions: partitions,
+        }
     }
 }
 
@@ -503,16 +541,20 @@ pub struct HashPartition<'a> {
     buckets: u32,
 }
 
-impl <'a> HashPartition<'a> {
+impl<'a> HashPartition<'a> {
     pub fn new(columns: Vec<&'a str>, seed: Option<u32>, buckets: u32) -> HashPartition<'a> {
-        HashPartition { columns: columns, seed: seed, buckets: buckets }
+        HashPartition {
+            columns: columns,
+            seed: seed,
+            buckets: buckets,
+        }
     }
 }
 
 #[derive(Debug, PartialEq)]
 pub enum AlterTableStep<'a> {
     RenameTable {
-        table_name: &'a str
+        table_name: &'a str,
     },
     RenameColumn {
         old_column_name: &'a str,
