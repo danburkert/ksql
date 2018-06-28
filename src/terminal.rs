@@ -331,45 +331,6 @@ impl Terminal {
         .map(move |table| self.print_prettytable(table))
     }
 
-    pub fn print_table<C>(&mut self, columns: &[C]) where C: AsRef<[String]> {
-        let rows = columns.iter().fold(None, |prev, col| {
-            let col = col.as_ref();
-            let rows = col.len();
-            if let Some(prev_rows) = prev {
-                assert_eq!(prev_rows, rows);
-            }
-            Some(rows)
-        }).expect("there must be at least a header");
-        let widths = columns.iter()
-                            .map(|col| col.as_ref().iter().map(|cell| cell.len()).max().unwrap_or(0))
-                            .collect::<Vec<_>>();
-
-        for row in 0..rows {
-            for col in 0..columns.len() {
-                if col == 0 {
-                    write!(&mut self.out, "{:<1$} ", columns[col].as_ref()[row], widths[col]).unwrap();
-                } else if col == columns.len() - 1 {
-                    write!(&mut self.out, "| {:<1$}", columns[col].as_ref()[row], widths[col]).unwrap();
-                } else {
-                    write!(&mut self.out, "| {:<1$} ", columns[col].as_ref()[row], widths[col]).unwrap();
-                }
-            }
-            writeln!(&mut self.out, "").unwrap();
-
-            if row == 0 {
-                for col in 0..columns.len() {
-                    if col == 0 {
-                        write!(&mut self.out, "{:-<1$}", "", widths[col]).unwrap();
-                    } else {
-                        write!(&mut self.out, "-+-{:-<1$}", "", widths[col]).unwrap();
-                    }
-                }
-                writeln!(&mut self.out, "").unwrap();
-            }
-        }
-        writeln!(&mut self.out, "").unwrap();
-    }
-
     pub fn print_prettytable(&mut self, table: prettytable::Table) {
         table.print_term(&mut *self.out).unwrap();
     }
