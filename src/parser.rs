@@ -1236,7 +1236,7 @@ impl<'a> Parser<'a> for ColumnSpec {
         let (data_type, remaining) = try_parse!(Chomp1.and_then(DataType).parse(remaining));
 
         let mut primary_key = false;
-        let mut nullable = false;
+        let mut not_null = false;
         let mut encoding_type = None;
         let mut compression_type = None;
         let mut block_size = None;
@@ -1274,7 +1274,7 @@ impl<'a> Parser<'a> for ColumnSpec {
                 }
             }
 
-            if !nullable {
+            if !not_null {
                 match Chomp1
                     .and_then(Keyword("NOT"))
                     .and_then(Chomp1)
@@ -1283,7 +1283,7 @@ impl<'a> Parser<'a> for ColumnSpec {
                 {
                     Ok(_, rem) => {
                         remaining = rem;
-                        nullable = true;
+                        not_null = true;
                         continue;
                     }
                     Incomplete(hints, rem) => failed_results.push(Incomplete(hints, rem)),
@@ -1341,7 +1341,7 @@ impl<'a> Parser<'a> for ColumnSpec {
         let column_spec = command::ColumnSpec::new(
             name,
             data_type,
-            nullable,
+            not_null,
             encoding_type,
             compression_type,
             block_size,
