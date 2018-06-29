@@ -122,77 +122,84 @@ impl Terminal {
         }
     }
 
+    /// Prints 'msg' to stderr, in red.
+    fn print_stderr_red(&mut self, msg: &str) {
+        self.red();
+        write!(self.err, "{}", msg).unwrap();
+        self.reset();
+    }
+
+    /// Prints 'msg' to stderr, in bold.
+    fn print_stderr_bold<D>(&mut self, msg: &D) where D: fmt::Display {
+        self.bold();
+        write!(self.err, "{}", msg).unwrap();
+        self.reset();
+    }
+
+    /// Prints a blank line to stdout, for separation.
+    fn print_newline(&mut self) {
+        writeln!(self.out, "").unwrap();
+    }
+
     /// Prints a parse error to stderr.
     pub fn print_parse_error(&mut self, input: &str, remaining: &str, hints: &[Hint]) {
         let error_idx = input.len() - remaining.len();
         assert_eq!(&input[error_idx..], remaining);
-        if !input.is_empty() {
-            let mut line_end_idx = 0;
-            for line in input.lines() {
-                line_end_idx += 1 + line.len();
-                if line_end_idx >= error_idx {
-                    self.red();
-                    write!(self.err, "error: ").unwrap();
-                    self.reset();
+        let mut line_end_idx = 0;
+        for line in input.lines() {
+            line_end_idx += 1 + line.len();
+            if line_end_idx >= error_idx {
+                let hints = hints
+                    .into_iter()
+                    .map(|hint| match hint {
+                        &Hint::Constant(ref expected) => format!("'{}'", *expected,),
+                        &Hint::Integer => "an integer".to_string(),
+                        &Hint::PosInteger => "a positive integer".to_string(),
+                        &Hint::Float => "a floating point value".to_string(),
+                        &Hint::Timestamp => "a timestamp value".to_string(),
+                        &Hint::CharEscape => "a character escape sequence".to_string(),
+                        &Hint::HexEscape => "a hex escape sequence".to_string(),
+                        &Hint::Table(_) => "a table name".to_string(),
+                        &Hint::Column(_) => "a column name".to_string(),
+                    })
+                    .collect::<Vec<_>>();
+                self.print_error(&format!("expected: {}", &hints.join(" or ")));
 
-                    let hints = hints
-                        .into_iter()
-                        .map(|hint| match hint {
-                            &Hint::Constant(ref expected) => format!("'{}'", *expected,),
-                            &Hint::Integer => "an integer".to_string(),
-                            &Hint::PosInteger => "a positive integer".to_string(),
-                            &Hint::Float => "a floating point value".to_string(),
-                            &Hint::Timestamp => "a timestamp value".to_string(),
-                            &Hint::CharEscape => "a character escape sequence".to_string(),
-                            &Hint::HexEscape => "a hex escape sequence".to_string(),
-                            &Hint::Table(_) => "a table name".to_string(),
-                            &Hint::Column(_) => "a column name".to_string(),
-                        })
-                        .collect::<Vec<_>>();
-
-                    self.bold();
-                    writeln!(self.err, "expected: {}", hints.join(" or ")).unwrap();
-                    self.reset();
-
-                    let word_len = input[error_idx..]
-                        .split_whitespace()
-                        .next()
-                        .unwrap_or("")
-                        .len();
-                    writeln!(self.err, "{}", line).unwrap();
-                    let arrow_idx = line.len() + 1 + error_idx - line_end_idx;
-                    writeln!(self.err, "{:>2$}{:~<3$}", "", "^", arrow_idx, word_len).unwrap();
-                    break;
-                }
+                let word_len = input[error_idx..]
+                    .split_whitespace()
+                    .next()
+                    .unwrap_or("")
+                    .len();
+                writeln!(self.err, "{}", line).unwrap();
+                let arrow_idx = line.len() + 1 + error_idx - line_end_idx;
+                writeln!(self.err, "{:>2$}{:~<3$}", "", "^", arrow_idx, word_len).unwrap();
+                break;
             }
         }
-        writeln!(&mut self.out, "").unwrap();
     }
 
-    /// Prints a kudu err to stderr.
-    pub fn print_kudu_error(&mut self, error: &kudu::Error) {
-        self.red();
-        write!(self.err, "error: ").unwrap();
-        self.reset();
-        writeln!(self.err, "{}", error).unwrap();
-        writeln!(&mut self.out, "").unwrap();
+    /// Prints an error message to stderr.
+    pub fn print_error<D>(&mut self, msg: &D) where D: fmt::Display {
+        self.print_stderr_red("error: ");
+        self.print_stderr_bold(msg);
+        self.print_newline();
     }
 
-    pub fn print_success(&mut self, msg: &str) {
+    /// Prints a message to stdout.
+    pub fn print_success<D>(&mut self, msg: &D) where D: fmt::Display {
         writeln!(self.out, "{}", msg).unwrap();
-        writeln!(&mut self.out, "").unwrap();
     }
 
-    pub fn print_warning(&mut self, msg: &str) {
-        self.red();
-        write!(self.err, "warning: ").unwrap();
-        self.reset();
-        writeln!(self.err, "{}", msg).unwrap();
+    /// Prints a warning message to stderr.
+    pub fn print_warning<D>(&mut self, msg: &D) where D: fmt::Display {
+        self.print_stderr_red("warning: ");
+        self.print_stderr_bold(msg);
+        self.print_newline();
     }
 
+    /// Prints the help message to stdout.
     pub fn print_help(&mut self) {
-        writeln!(&mut self.out, "{}", HELP).unwrap();
-        writeln!(&mut self.out, "").unwrap();
+        self.print_success(&HELP);
     }
 
     /// Prints the master servers.
