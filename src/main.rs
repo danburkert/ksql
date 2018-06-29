@@ -102,8 +102,7 @@ Commands:
         DROP COLUMN <column-name> |
         ADD RANGE PARTITION (<col-val>, ..) <= VALUES < (<col-val>, ..) |
         DROP RANGE PARTITION (<col-val>, ..) <= VALUES < (<col-val>, ..)
-    ], ..;
-";
+    ], ..;";
 
 /*
     SELECT * FROM <table>;

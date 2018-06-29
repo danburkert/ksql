@@ -89,7 +89,7 @@ impl<'a> Command<'a> {
                     }
                     term.print_prettytable(table);
                 }
-                Err(error) => term.print_kudu_error(&error),
+                Err(error) => term.print_error(&error),
             },
             Command::ShowCreateTable { table } => match runtime.block_on(future::lazy(|| {
                 client
@@ -97,15 +97,15 @@ impl<'a> Command<'a> {
                     .and_then(|table| table.tablets().collect().map(|tablets| (table, tablets)))
             })) {
                 Ok((table, tablets)) => term.print_create_table(table, tablets),
-                Err(error) => term.print_kudu_error(&error),
+                Err(error) => term.print_error(&error),
             },
             Command::ShowMasters => match runtime.block_on(client.masters()) {
                 Ok(masters) => term.print_masters(masters),
-                Err(error) => term.print_kudu_error(&error),
+                Err(error) => term.print_error(&error),
             },
             Command::ShowTabletServers => match runtime.block_on(client.tablet_servers()) {
                 Ok(tablet_servers) => term.print_tablet_servers(tablet_servers),
-                Err(error) => term.print_kudu_error(&error),
+                Err(error) => term.print_error(&error),
             },
             Command::ShowTableTablets { table } => match runtime.block_on(future::lazy(|| {
                 client
@@ -113,7 +113,7 @@ impl<'a> Command<'a> {
                     .and_then(|table| table.tablets().collect().map(|tablets| (table, tablets)))
             })) {
                 Ok((table, tablets)) => term.print_tablets(&table, tablets),
-                Err(error) => term.print_kudu_error(&error),
+                Err(error) => term.print_error(&error),
             },
             Command::ShowTableReplicas { table } => match runtime.block_on(future::lazy(|| {
                 client
@@ -121,15 +121,15 @@ impl<'a> Command<'a> {
                     .and_then(|table| table.tablets().collect())
             })) {
                 Ok(tablets) => term.print_replicas(tablets),
-                Err(error) => term.print_kudu_error(&error),
+                Err(error) => term.print_error(&error),
             },
             Command::DescribeTable { table } => match runtime.block_on(client.open_table(table)) {
                 Ok(table) => term.print_table_description(table.schema()),
-                Err(error) => term.print_kudu_error(&error),
+                Err(error) => term.print_error(&error),
             },
             Command::DropTable { table } => match runtime.block_on(client.delete_table(table)) {
-                Ok(_) => term.print_success("table dropped"),
-                Err(error) => term.print_kudu_error(&error),
+                Ok(_) => term.print_success(&format!("table '{}' dropped", table)),
+                Err(error) => term.print_error(&error),
             },
             Command::Select { table, selector } => {
                 let columns = match selector {
@@ -138,7 +138,7 @@ impl<'a> Command<'a> {
                     Selector::CountStar => {
                         return match runtime.block_on(future::lazy(|| count(client, table))) {
                             Ok(count) => term.print_prettytable(table![["Count(*)"], [count]]),
-                            Err(error) => term.print_kudu_error(&error),
+                            Err(error) => term.print_error(&error),
                         }
                     }
                 };
@@ -165,7 +165,7 @@ impl<'a> Command<'a> {
                         stats.successful_operations(),
                         stats.failed_operations()
                     )),
-                    Err(error) => term.print_kudu_error(&error),
+                    Err(error) => term.print_error(&error),
                 }
             }
             Command::CreateTable {
@@ -184,15 +184,15 @@ impl<'a> Command<'a> {
                 hash_partitions,
                 replicas,
             )) {
-                Ok(_) => term.print_success("table created"),
-                Err(error) => term.print_kudu_error(&error),
+                Ok(_) => term.print_success(&format!("table '{}' created", name)),
+                Err(error) => term.print_error(&error),
             },
             Command::AlterTable { table_name, steps } => {
                 eprintln!("Altering table {}; steps: {:?}", table_name, steps);
                 match runtime.block_on(future::lazy(move || alter_table(client, table_name, steps)))
                 {
-                    Ok(_) => term.print_success("table altered"),
-                    Err(error) => term.print_kudu_error(&error),
+                    Ok(_) => term.print_success(&format!("table '{}' altered", table_name)),
+                    Err(error) => term.print_error(&error),
                 }
             }
         }
